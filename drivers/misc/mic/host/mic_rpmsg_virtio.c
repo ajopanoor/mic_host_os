@@ -1,6 +1,5 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/remoteproc.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
@@ -9,8 +8,10 @@
 #include <linux/virtio_ids.h>
 #include <linux/virtio_ring.h>
 #include <linux/vringh.h>
+#include <linux/idr.h>
 #include <asm/cacheflush.h>
 #include <linux/scatterlist.h>
+#include "mic_proc.h"
 
 #define DRV_NAME "dummy-rproc"
 #define LDRV_NAME "dummy-mic_proc"
@@ -18,11 +19,7 @@
 
 struct dummy_rproc_resourcetable {
 	struct resource_table		main_hdr;
-	u32				offset[2];
-	/* We'd need some physical mem */
-	struct fw_rsc_hdr		rsc_hdr_mem;
-	struct fw_rsc_carveout		rsc_mem;
-	/* And some rpmsg rings */
+	u32				offset[1];
 	struct fw_rsc_hdr		rsc_hdr_vdev;
 	struct fw_rsc_vdev		rsc_vdev;
 	struct fw_rsc_vdev_vring	rsc_ring0;
@@ -41,19 +38,7 @@ struct dummy_rproc_resourcetable dummy_remoteproc_resourcetable
 		.reserved =	{ 0, 0 },		/* reserved - must be 0 */
 	},
 	.offset = {					/* offsets to our resource entries */
-		offsetof(struct dummy_rproc_resourcetable, rsc_hdr_mem),
 		offsetof(struct dummy_rproc_resourcetable, rsc_hdr_vdev),
-	},
-	.rsc_hdr_mem = {
-		.type =		RSC_CARVEOUT,		/* mem resource */
-	},
-	.rsc_mem = {
-		.da =		0,	/* we don't care about the dev address */
-		.pa =		0,	/* we actually need to be here */
-		.len =		0,	/* size please */
-		.flags =	0,			/* TODO flags */
-		.reserved =	0,			/* reserved - 0 */
-		.name =		"dummy-rproc-mem",
 	},
 	.rsc_hdr_vdev = {
 		.type =		RSC_VDEV,		/* vdev resource */
@@ -98,7 +83,6 @@ struct dummy_rproc_resourcetable dummy_remoteproc_resourcetable
 	}
 };
 
-extern int dummy_mic_proc_set_ap_callback(void (*fn)(void *), void *data);
 
 static struct platform_device *mic_proc_device;
 struct dummy_rproc_resourcetable *lrsc = &dummy_remoteproc_resourcetable;
@@ -117,12 +101,11 @@ struct mic_proc {
 	struct device *dev;
 	struct list_head lvdevs;
 	struct resource_table *table_ptr;
-	struct resource_table *cached_table;
+	struct idr notifyids;
 	void *priv;
 	u32 table_csum;
 	u64 intr_count;
 };
-extern void dummy_mic_proc_kick_bsp(void);
 
 static bool mic_proc_virtio_notify(struct virtqueue *vq)
 {
@@ -131,7 +114,6 @@ static bool mic_proc_virtio_notify(struct virtqueue *vq)
 	 * kick the right queue on the other end. For time being
 	 * ISR will look for work in both queues.
 	 */
-	dummy_mic_proc_kick_bsp();
 	return true;
 }
 /* kick the remote processor, and let it know which vring to poke at */
@@ -145,7 +127,6 @@ static void mic_proc_virtio_vringh_notify(struct vringh *vrh)
 	mic_proc = (struct mic_proc *)lvring->rvdev->rproc;
 	notifyid = lvring->notifyid;
 #endif
-	dummy_mic_proc_kick_bsp();
 }
 
 
@@ -303,18 +284,18 @@ static void mic_proc_virtio_set(struct virtio_device *vdev, unsigned offset,
 			__func__, offset, mic_proc->table_ptr, rsc, cfg);
 	memcpy(cfg + offset, buf, len);
 }
-int mic_proc_alloc_vring(struct rproc_vdev *rvdev, int i)
+int mic_proc_alloc_vring(struct rproc_vdev *lvdev, int i)
 {
-	struct rproc *rproc = rvdev->rproc;
-	struct device *dev = &rproc->dev;
-	struct rproc_vring *rvring = &rvdev->vring[i];
+	struct mic_proc *mic_proc = lvdev->rproc;
+	struct device *dev = mic_proc->dev;
+	struct rproc_vring *lvring = &lvdev->vring[i];
 	struct fw_rsc_vdev *rsc;
 	dma_addr_t dma;
 	void *va;
 	int ret, size, notifyid;
 
 	/* actual size of vring (in bytes) */
-	size = PAGE_ALIGN(vring_size(rvring->len, rvring->align));
+	size = PAGE_ALIGN(vring_size(lvring->len, lvring->align));
 
 	/*
 	 * Allocate non-cacheable memory for the vring. In the future
@@ -331,7 +312,7 @@ int mic_proc_alloc_vring(struct rproc_vdev *rvdev, int i)
 	 * TODO: assign a notifyid for rvdev updates as well
 	 * TODO: support predefined notifyids (via resource table)
 	 */
-	ret = idr_alloc(&rproc->notifyids, rvring, 0, 0, GFP_KERNEL);
+	ret = idr_alloc(&mic_proc->notifyids, lvring, 0, 0, GFP_KERNEL);
 	if (ret < 0) {
 		dev_err(dev, "idr_alloc failed: %d\n", ret);
 		dma_free_coherent(dev->parent, size, va, dma);
@@ -339,12 +320,12 @@ int mic_proc_alloc_vring(struct rproc_vdev *rvdev, int i)
 	}
 	notifyid = ret;
 
-	dev_dbg(dev, "vring%d: va %p dma %llx size %x idr %d\n", i, va,
+	dev_info(dev, "vring%d: va %p dma %llx size %x idr %d\n", i, va,
 				(unsigned long long)dma, size, notifyid);
 
-	rvring->va = va;
-	rvring->dma = dma;
-	rvring->notifyid = notifyid;
+	lvring->va = va;
+	lvring->dma = dma;
+	lvring->notifyid = notifyid;
 
 	/*
 	 * Let the rproc know the notifyid and da of this vring.
@@ -352,7 +333,7 @@ int mic_proc_alloc_vring(struct rproc_vdev *rvdev, int i)
 	 * set up the iommu. In this case the device address (da) will
 	 * hold the physical address and not the device address.
 	 */
-	rsc = (void *)mic_proc->table_ptr + rvdev->rsc_offset;
+	rsc = (void *)mic_proc->table_ptr + lvdev->rsc_offset;
 	rsc->vring[i].da = dma;
 	rsc->vring[i].notifyid = notifyid;
 	return 0;
@@ -454,7 +435,6 @@ static struct virtqueue *lp_find_vq(struct virtio_device *vdev,
 	return vq;
 }
 
-extern irqreturn_t vring_avail_interrupt(int irq, void *_vq);
 /*
  * TODO: Fix the following two routines to interrupt only the virtqueue which
  * has some work to do.
@@ -486,7 +466,7 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 				}
 				break;
 			case 3:
-				ret = vring_avail_interrupt(1, lvring->vq);
+				//ret = vring_avail_interrupt(1, lvring->vq);
 				break;
 			default:
 				printk(KERN_INFO "%s: Failed interrupt!"
@@ -525,7 +505,7 @@ static int mic_proc_virtio_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 {
 	int i, ret=0;
 	struct rproc_vdev *lvdev = vdev_to_rvdev(vdev);
-	struct mic_proc *mic_proc = (struct mic_proc *)lvdev->rproc;
+//	struct mic_proc *mic_proc = (struct mic_proc *)lvdev->rproc;
 
 	for (i = 0; i < nvqs; i++) {
 		vqs[i] = lp_find_vq(vdev, i, callbacks[i], names[i]);
@@ -534,12 +514,12 @@ static int mic_proc_virtio_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 			dev_dbg(&vdev->dev,"mic_proc: failed find rp_find_vq\n");
 		}
 	}
-
+#if 0
 	if(dummy_mic_proc_set_ap_callback(dummy_mic_proc_callback,(void *)mic_proc)) {
 		dev_err(&vdev->dev,"%s: registering callback for rproc "
 				"interrupts failed\n",__func__);
 	}
-
+#endif
 	return ret;
 }
 
@@ -757,7 +737,7 @@ static int mic_proc_handle_vdev(struct mic_proc *mic_proc, struct fw_rsc_vdev *r
 
 	/* remember the resource offset*/
 	lvdev->rsc_offset = offset;
-	lvdev->rproc = (struct rproc *)mic_proc; // TODO: Remove the Hack
+	lvdev->rproc = (void*)mic_proc; // TODO: Remove the Hack
 
 	list_add_tail(&lvdev->node, &mic_proc->lvdevs);
 	mic_proc->priv = lvdev;
@@ -848,7 +828,6 @@ static void mic_proc_config_virtio(struct mic_proc *mic_proc)
 	mic_proc->max_notifyid = -1;
 	ret = mic_proc_handle_resources(mic_proc, tablesz, mic_proc_count_vrings_handler);
 	if (ret) {
-		kfree(mic_proc->cached_table);
 		return;
 	}
 
@@ -897,7 +876,7 @@ static struct platform_driver mic_proc_driver = {
 		.owner	= THIS_MODULE,
 	},
 };
-
+bool is_host = true;
 int __init mic_proc_init(void)
 {
 	int ret = 0;
@@ -908,7 +887,7 @@ int __init mic_proc_init(void)
 	if (unlikely(mic_proc_device))
 		return -EEXIST;
 
-	if(is_bsp) {
+	if(!is_host) {
 		printk(KERN_INFO "mic_proc: don't run on BSP. Exiting\n");
 		return ret;
 	}
