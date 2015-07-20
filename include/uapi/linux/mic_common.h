@@ -100,6 +100,8 @@ struct mic_bootparam {
 	__u8 c2h_scif_db;
 	__u64 scif_host_dma_addr;
 	__u64 scif_card_dma_addr;
+	__u64 mic_proc_rsc_table;
+	__u64 mic_proc_rsc_size;
 } __attribute__ ((aligned(8)));
 
 /**

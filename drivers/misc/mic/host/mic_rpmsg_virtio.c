@@ -11,30 +11,21 @@
 #include <linux/idr.h>
 #include <asm/cacheflush.h>
 #include <linux/scatterlist.h>
+#include <linux/mic_common.h>
 #include "mic_proc.h"
+#include "mic_device.h"
+#include "mic_smpt.h"
 
 #define DRV_NAME "dummy-rproc"
 #define LDRV_NAME "dummy-mic_proc"
 
-
-struct dummy_rproc_resourcetable {
-	struct resource_table		main_hdr;
-	u32				offset[1];
-	struct fw_rsc_hdr		rsc_hdr_vdev;
-	struct fw_rsc_vdev		rsc_vdev;
-	struct fw_rsc_vdev_vring	rsc_ring0;
-	struct fw_rsc_vdev_vring	rsc_ring1;
-	struct fw_rsc_vdev_vring	rsc_ring2;
-	struct fw_rsc_vdev_vring	rsc_ring3;
-	struct fw_rsc_vdev_config	rsc_vdev_cfg;
-};
 
 struct dummy_rproc_resourcetable dummy_remoteproc_resourcetable
 	__attribute__((section(".resource_table"), aligned(PAGE_SIZE))) =
 {
 	.main_hdr = {
 		.ver =		1,			/* version */
-		.num =		2,			/* we have 2 entries - mem and rpmsg */
+		.num =		1,			/* we have 2 entries - mem and rpmsg */
 		.reserved =	{ 0, 0 },		/* reserved - must be 0 */
 	},
 	.offset = {					/* offsets to our resource entries */
@@ -84,7 +75,7 @@ struct dummy_rproc_resourcetable dummy_remoteproc_resourcetable
 };
 
 
-static struct platform_device *mic_proc_device;
+//static struct platform_device *mic_proc_device;
 struct dummy_rproc_resourcetable *lrsc = &dummy_remoteproc_resourcetable;
 
 #define CONFIG_HOMOGENEOUS_AP	1
@@ -95,17 +86,6 @@ static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1,  0,  3, -1 };
 static int vrh_id_map[RVDEV_NUM_VRINGS] = { 0, -1, -1, -1 };
 static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1,  2,  3, -1 };
 #endif
-
-struct mic_proc {
-	int max_notifyid;
-	struct device *dev;
-	struct list_head lvdevs;
-	struct resource_table *table_ptr;
-	struct idr notifyids;
-	void *priv;
-	u32 table_csum;
-	u64 intr_count;
-};
 
 static bool mic_proc_virtio_notify(struct virtqueue *vq)
 {
@@ -505,7 +485,7 @@ static int mic_proc_virtio_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 {
 	int i, ret=0;
 	struct rproc_vdev *lvdev = vdev_to_rvdev(vdev);
-//	struct mic_proc *mic_proc = (struct mic_proc *)lvdev->rproc;
+	struct mic_proc *mic_proc = (struct mic_proc *)lvdev->rproc;
 
 	for (i = 0; i < nvqs; i++) {
 		vqs[i] = lp_find_vq(vdev, i, callbacks[i], names[i]);
@@ -821,8 +801,29 @@ static void mic_proc_config_virtio(struct mic_proc *mic_proc)
 {
 	// TODO get it from fw table routines
 	int ret, tablesz = sizeof(struct dummy_rproc_resourcetable);
-	/* resource table */
-	mic_proc->table_ptr = (struct resource_table *)lrsc;
+	struct dummy_rproc_resourcetable *rsc_va;
+	struct mic_device *mdev = mic_proc->mdev;
+	struct mic_bootparam *bootparam = mdev->dp;
+	struct device *dev = mic_proc->dev;
+	dma_addr_t rsc_dma_addr;
+
+	/* allocate resource table, copy lrsc, map va*/
+	rsc_va = kzalloc(tablesz, GFP_KERNEL);
+	if(!rsc_va) {
+		dev_err(dev, "%s %d err %d\n",
+				__func__, __LINE__, -ENOMEM);
+		return;
+	}
+	memcpy(rsc_va, lrsc, tablesz);
+	mic_proc->table_ptr = (struct resource_table *)rsc_va;
+	bootparam->mic_proc_rsc_table = mic_map_single(mdev, rsc_va, tablesz);
+	if(mic_map_error(bootparam->mic_proc_rsc_table)){
+		kfree(rsc_va);
+		mic_proc->table_ptr = NULL;
+		dev_err(dev, "%s %d err %d\n",  __func__, __LINE__, -ENOMEM);
+		return;
+	}
+	bootparam->mic_proc_rsc_size = tablesz;
 
 	/* count the number of notify-ids */
 	mic_proc->max_notifyid = -1;
@@ -835,6 +836,27 @@ static void mic_proc_config_virtio(struct mic_proc *mic_proc)
 	ret = mic_proc_handle_resources(mic_proc, tablesz, mic_proc_vdev_handler);
 }
 
+int mic_proc_init(struct mic_device *mdev)
+{
+	struct mic_proc *mic_proc;
+
+	mic_proc = kzalloc(sizeof(struct mic_proc), GFP_KERNEL);
+	if (!mic_proc) {
+		dev_dbg(mdev->sdev->parent,"%s: kzalloc failed\n", __func__);
+		return -ENOMEM;
+	}
+
+	INIT_LIST_HEAD(&mic_proc->lvdevs);
+
+	mic_proc->dev = mdev->sdev->parent;
+	mic_proc->mdev = mdev;
+	mdev->mic_proc = mic_proc;
+	mic_proc_config_virtio(mic_proc);
+	return 0;
+}
+
+
+#if 0
 static int mic_proc_probe(struct platform_device *pdev)
 {
 	struct mic_proc *mic_proc;
@@ -912,3 +934,4 @@ static void __exit mic_proc_exit(void)
 	platform_device_unregister(mic_proc_device);
 	platform_driver_unregister(&mic_proc_driver);
 }
+#endif

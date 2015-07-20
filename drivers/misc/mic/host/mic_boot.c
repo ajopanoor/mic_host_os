@@ -317,6 +317,8 @@ void mic_bootparam_init(struct mic_device *mdev)
 	bootparam->scif_card_dma_addr = 0x0;
 	bootparam->c2h_scif_db = -1;
 	bootparam->h2c_scif_db = -1;
+	bootparam->mic_proc_rsc_table = -1;
+	bootparam->mic_proc_rsc_size = -1;
 }
 
 /**

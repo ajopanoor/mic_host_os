@@ -154,6 +154,31 @@ struct rproc_vdev {
 	u32 rsc_offset;
 };
 
+struct dummy_rproc_resourcetable {
+	struct resource_table		main_hdr;
+	u32				offset[1];
+	struct fw_rsc_hdr		rsc_hdr_vdev;
+	struct fw_rsc_vdev		rsc_vdev;
+	struct fw_rsc_vdev_vring	rsc_ring0;
+	struct fw_rsc_vdev_vring	rsc_ring1;
+	struct fw_rsc_vdev_vring	rsc_ring2;
+	struct fw_rsc_vdev_vring	rsc_ring3;
+	struct fw_rsc_vdev_config	rsc_vdev_cfg;
+};
+
+struct mic_proc {
+	int max_notifyid;
+	struct mic_device *mdev;
+	struct device *dev;
+	struct list_head lvdevs;
+	struct resource_table *table_ptr;
+	struct idr notifyids;
+	void *priv;
+	u32 table_csum;
+	u64 intr_count;
+};
+
+
 static inline struct rproc_vdev *vdev_to_rvdev(struct virtio_device *vdev)
 {
 	return container_of(vdev, struct rproc_vdev, vdev);

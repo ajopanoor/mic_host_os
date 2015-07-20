@@ -29,6 +29,7 @@
 #include <linux/mic_bus.h>
 #include "../bus/scif_bus.h"
 #include "mic_intr.h"
+#include "mic_proc.h"
 
 /* The maximum number of MIC devices supported in a single host system. */
 #define MIC_MAX_NUM_DEVS 256
@@ -134,6 +135,7 @@ struct mic_device {
 	struct dma_chan *dma_ch[MIC_MAX_DMA_CHAN];
 	int num_dma_ch;
 	struct scif_hw_dev *scdev;
+	struct mic_proc *mic_proc;
 };
 
 /**
