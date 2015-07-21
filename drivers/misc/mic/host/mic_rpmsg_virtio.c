@@ -15,6 +15,7 @@
 #include "mic_proc.h"
 #include "mic_device.h"
 #include "mic_smpt.h"
+#include "mic_intr.h"
 
 #define DRV_NAME "dummy-rproc"
 #define LDRV_NAME "dummy-mic_proc"
@@ -485,7 +486,7 @@ static int mic_proc_virtio_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 {
 	int i, ret=0;
 	struct rproc_vdev *lvdev = vdev_to_rvdev(vdev);
-	struct mic_proc *mic_proc = (struct mic_proc *)lvdev->rproc;
+	//struct mic_proc *mic_proc = (struct mic_proc *)lvdev->rproc;
 
 	for (i = 0; i < nvqs; i++) {
 		vqs[i] = lp_find_vq(vdev, i, callbacks[i], names[i]);
@@ -806,6 +807,7 @@ static void mic_proc_config_virtio(struct mic_proc *mic_proc)
 	struct mic_bootparam *bootparam = mdev->dp;
 	struct device *dev = mic_proc->dev;
 	dma_addr_t rsc_dma_addr;
+	char irqname[10];
 
 	/* allocate resource table, copy lrsc, map va*/
 	rsc_va = kzalloc(tablesz, GFP_KERNEL);
@@ -824,6 +826,21 @@ static void mic_proc_config_virtio(struct mic_proc *mic_proc)
 		return;
 	}
 	bootparam->mic_proc_rsc_size = tablesz;
+
+	snprintf(irqname, sizeof(irqname), "mic%dvirtio%d", rsc_va->rsc_vdev.id,
+		 rsc_va->rsc_vdev.id);
+	mic_proc->db = mic_next_db(mdev);
+	mic_proc->db_cookie = mic_request_threaded_irq(mdev,
+					       dummy_mic_proc_callback,
+					       NULL, irqname, mic_proc,
+					       mic_proc->db, MIC_INTR_DB);
+	if (IS_ERR(mic_proc->db_cookie)) {
+		ret = PTR_ERR(mic_proc->db_cookie);
+		dev_err(dev, "request irq failed\n");
+		return;
+	}
+
+	rsc_va->rsc_vdev.notifyid = mic_proc->db;
 
 	/* count the number of notify-ids */
 	mic_proc->max_notifyid = -1;

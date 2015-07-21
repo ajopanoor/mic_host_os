@@ -176,6 +176,8 @@ struct mic_proc {
 	void *priv;
 	u32 table_csum;
 	u64 intr_count;
+	int db;
+	struct mic_irq *db_cookie;
 };
 
 
