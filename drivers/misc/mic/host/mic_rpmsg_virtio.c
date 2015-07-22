@@ -803,7 +803,6 @@ static void mic_proc_config_virtio(struct mic_proc *mic_proc)
 	int ret, tablesz = sizeof(struct dummy_rproc_resourcetable);
 	struct dummy_rproc_resourcetable *rsc_va;
 	struct mic_device *mdev = mic_proc->mdev;
-	struct mic_bootparam *bootparam = mdev->dp;
 	struct device *dev = mic_proc->dev;
 	dma_addr_t rsc_dma_addr;
 	char irqname[10];
@@ -817,14 +816,13 @@ static void mic_proc_config_virtio(struct mic_proc *mic_proc)
 	}
 	memcpy(rsc_va, lrsc, tablesz);
 	mic_proc->table_ptr = (struct resource_table *)rsc_va;
-	bootparam->mic_proc_rsc_table = mic_map_single(mdev, rsc_va, tablesz);
-	if(mic_map_error(bootparam->mic_proc_rsc_table)){
+	rsc_dma_addr = mic_map_single(mdev, rsc_va, tablesz);
+	if(mic_map_error(rsc_dma_addr)){
 		kfree(rsc_va);
 		mic_proc->table_ptr = NULL;
 		dev_err(dev, "%s %d err %d\n",  __func__, __LINE__, -ENOMEM);
 		return;
 	}
-	bootparam->mic_proc_rsc_size = tablesz;
 
 	snprintf(irqname, sizeof(irqname), "mic%dvirtio%d", rsc_va->rsc_vdev.id,
 		 rsc_va->rsc_vdev.id);
@@ -840,6 +838,9 @@ static void mic_proc_config_virtio(struct mic_proc *mic_proc)
 	}
 
 	rsc_va->rsc_vdev.notifyid = mic_proc->db;
+
+	mdev->ops->write_spad(mdev, 12, rsc_dma_addr);
+	mdev->ops->write_spad(mdev, 13, rsc_dma_addr >> 32);
 
 	/* count the number of notify-ids */
 	mic_proc->max_notifyid = -1;
