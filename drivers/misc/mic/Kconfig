@@ -88,3 +88,11 @@ config SCIF
 	  More information about the Intel MIC family as well as the Linux
 	  OS and tools for MIC to use with this driver are available from
 	  <http://software.intel.com/en-us/mic-developer>.
+
+comment "RPMSG for Xeon Phi"
+
+config MIC_RPMSG
+	tristate "Virtio driver for RPMSG"
+	depends on 64BIT && X86 && INTEL_MIC_BUS
+	default y
+

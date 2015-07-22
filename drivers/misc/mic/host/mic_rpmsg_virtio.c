@@ -19,8 +19,7 @@
 
 #define DRV_NAME "dummy-rproc"
 #define LDRV_NAME "dummy-mic_proc"
-
-
+#ifdef CONFIG_MIC_RPMSG
 struct dummy_rproc_resourcetable dummy_remoteproc_resourcetable
 	__attribute__((section(".resource_table"), aligned(PAGE_SIZE))) =
 {
@@ -871,8 +870,7 @@ int mic_proc_init(struct mic_device *mdev)
 	mic_proc_config_virtio(mic_proc);
 	return 0;
 }
-
-
+#endif
 #if 0
 static int mic_proc_probe(struct platform_device *pdev)
 {
