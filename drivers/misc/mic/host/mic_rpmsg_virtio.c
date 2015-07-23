@@ -1,5 +1,3 @@
-#include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
@@ -12,15 +10,12 @@
 #include <asm/cacheflush.h>
 #include <linux/scatterlist.h>
 #include <linux/mic_common.h>
-#include "mic_proc.h"
 #include "mic_device.h"
 #include "mic_smpt.h"
 #include "mic_intr.h"
+#include "mic_proc.h"
 
-#define DRV_NAME "dummy-rproc"
-#define LDRV_NAME "dummy-mic_proc"
-#ifdef CONFIG_MIC_RPMSG
-struct dummy_rproc_resourcetable dummy_remoteproc_resourcetable
+struct mic_proc_resourcetable mproc_resourcetable
 	__attribute__((section(".resource_table"), aligned(PAGE_SIZE))) =
 {
 	.main_hdr = {
@@ -29,7 +24,7 @@ struct dummy_rproc_resourcetable dummy_remoteproc_resourcetable
 		.reserved =	{ 0, 0 },		/* reserved - must be 0 */
 	},
 	.offset = {					/* offsets to our resource entries */
-		offsetof(struct dummy_rproc_resourcetable, rsc_hdr_vdev),
+		offsetof(struct mic_proc_resourcetable, rsc_hdr_vdev),
 	},
 	.rsc_hdr_vdev = {
 		.type =		RSC_VDEV,		/* vdev resource */
@@ -74,9 +69,7 @@ struct dummy_rproc_resourcetable dummy_remoteproc_resourcetable
 	}
 };
 
-
-//static struct platform_device *mic_proc_device;
-struct dummy_rproc_resourcetable *lrsc = &dummy_remoteproc_resourcetable;
+struct mic_proc_resourcetable *lrsc = &mproc_resourcetable;
 
 #define CONFIG_HOMOGENEOUS_AP	1
 #ifdef CONFIG_HOMOGENEOUS_AP
@@ -264,6 +257,7 @@ static void mic_proc_virtio_set(struct virtio_device *vdev, unsigned offset,
 			__func__, offset, mic_proc->table_ptr, rsc, cfg);
 	memcpy(cfg + offset, buf, len);
 }
+
 int mic_proc_alloc_vring(struct rproc_vdev *lvdev, int i)
 {
 	struct mic_proc *mic_proc = lvdev->rproc;
@@ -460,7 +454,7 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 	return ret;
 }
 
-void dummy_mic_proc_callback(void *data)
+static irqreturn_t mic_proc_callback(int irq, void *data)
 {
 	struct mic_proc *mic_proc = data;
 	int i;
@@ -468,7 +462,7 @@ void dummy_mic_proc_callback(void *data)
 	printk(KERN_INFO "%s mic_proc %p\n",__func__, mic_proc);
 	if (unlikely(!mic_proc)) {
 		printk(KERN_DEBUG "In %s %p\n",__func__, mic_proc);
-		return;
+		return IRQ_HANDLED;
 	}
 
 	for (i=0; i <= mic_proc->max_notifyid; i++) {
@@ -476,6 +470,7 @@ void dummy_mic_proc_callback(void *data)
 			printk(KERN_DEBUG "%s No work to do vq %d\n",__func__,i);
 		}
 	}
+	return IRQ_HANDLED;
 }
 
 static int mic_proc_virtio_find_vqs(struct virtio_device *vdev, unsigned nvqs,
@@ -484,8 +479,6 @@ static int mic_proc_virtio_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		       const char *names[])
 {
 	int i, ret=0;
-	struct rproc_vdev *lvdev = vdev_to_rvdev(vdev);
-	//struct mic_proc *mic_proc = (struct mic_proc *)lvdev->rproc;
 
 	for (i = 0; i < nvqs; i++) {
 		vqs[i] = lp_find_vq(vdev, i, callbacks[i], names[i]);
@@ -494,12 +487,6 @@ static int mic_proc_virtio_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 			dev_dbg(&vdev->dev,"mic_proc: failed find rp_find_vq\n");
 		}
 	}
-#if 0
-	if(dummy_mic_proc_set_ap_callback(dummy_mic_proc_callback,(void *)mic_proc)) {
-		dev_err(&vdev->dev,"%s: registering callback for rproc "
-				"interrupts failed\n",__func__);
-	}
-#endif
 	return ret;
 }
 
@@ -797,60 +784,77 @@ static int mic_proc_handle_resources(struct mic_proc *mic_proc, int len,
  * on the local processor.
  *
  */
-static void mic_proc_config_virtio(struct mic_proc *mic_proc)
+static int mic_proc_config_virtio(struct mic_proc *mic_proc)
 {
-	// TODO get it from fw table routines
-	int ret, tablesz = sizeof(struct dummy_rproc_resourcetable);
-	struct dummy_rproc_resourcetable *rsc_va;
+	int ret, tablesz = sizeof(struct mic_proc_resourcetable);
+	struct mic_proc_resourcetable *rsc_va;
 	struct mic_device *mdev = mic_proc->mdev;
 	struct device *dev = mic_proc->dev;
-	dma_addr_t rsc_dma_addr;
 	char irqname[10];
 
 	/* allocate resource table, copy lrsc, map va*/
-	rsc_va = kzalloc(tablesz, GFP_KERNEL);
+	rsc_va = kzalloc(PAGE_SIZE, GFP_KERNEL);
 	if(!rsc_va) {
 		dev_err(dev, "%s %d err %d\n",
 				__func__, __LINE__, -ENOMEM);
-		return;
+		ret = -ENOMEM;
+		return ret;
 	}
+
 	memcpy(rsc_va, lrsc, tablesz);
 	mic_proc->table_ptr = (struct resource_table *)rsc_va;
-	rsc_dma_addr = mic_map_single(mdev, rsc_va, tablesz);
-	if(mic_map_error(rsc_dma_addr)){
-		kfree(rsc_va);
-		mic_proc->table_ptr = NULL;
-		dev_err(dev, "%s %d err %d\n",  __func__, __LINE__, -ENOMEM);
-		return;
-	}
 
 	snprintf(irqname, sizeof(irqname), "mic%dvirtio%d", rsc_va->rsc_vdev.id,
 		 rsc_va->rsc_vdev.id);
 	mic_proc->db = mic_next_db(mdev);
 	mic_proc->db_cookie = mic_request_threaded_irq(mdev,
-					       dummy_mic_proc_callback,
+					       mic_proc_callback,
 					       NULL, irqname, mic_proc,
 					       mic_proc->db, MIC_INTR_DB);
 	if (IS_ERR(mic_proc->db_cookie)) {
 		ret = PTR_ERR(mic_proc->db_cookie);
 		dev_err(dev, "request irq failed\n");
-		return;
+		goto free_rsc_table;
 	}
-
 	rsc_va->rsc_vdev.notifyid = mic_proc->db;
 
-	mdev->ops->write_spad(mdev, 12, rsc_dma_addr);
-	mdev->ops->write_spad(mdev, 13, rsc_dma_addr >> 32);
+	mic_proc->table_dma_addr = mic_map_single(mdev, rsc_va, PAGE_SIZE);
+	if(mic_map_error(mic_proc->table_dma_addr)){
+		dev_err(dev, "%s %d err %d\n",  __func__, __LINE__, -ENOMEM);
+		goto free_irq;
+	}
+
+	mdev->ops->write_spad(mdev, MIC_RPLO_SPAD, mic_proc->table_dma_addr);
+	mdev->ops->write_spad(mdev, MIC_RPHI_SPAD, mic_proc->table_dma_addr >> 32);
+
+	dev_info(dev, "rsc_dma_addr %llx, db %d, db_cookie %p",
+			mic_proc->table_dma_addr, mic_proc->db,
+			mic_proc->db_cookie);
 
 	/* count the number of notify-ids */
 	mic_proc->max_notifyid = -1;
 	ret = mic_proc_handle_resources(mic_proc, tablesz, mic_proc_count_vrings_handler);
 	if (ret) {
-		return;
+		dev_err(dev, "rsc table resource count failed\n");
+		goto unmap_dma_addr;
 	}
 
 	/* look for virtio devices and register them */
 	ret = mic_proc_handle_resources(mic_proc, tablesz, mic_proc_vdev_handler);
+	if (ret) {
+		dev_err(dev, "rsc table handle vdev failed\n");
+		goto unmap_dma_addr;
+	}
+	return 0;
+
+unmap_dma_addr:
+	mic_unmap_single(mdev, mic_proc->table_dma_addr, PAGE_SIZE);
+free_irq:
+	mic_free_irq(mdev, mic_proc->db_cookie, mic_proc);
+free_rsc_table:
+	kfree(rsc_va);
+	mic_proc->table_ptr = NULL;
+	return ret;
 }
 
 int mic_proc_init(struct mic_device *mdev)
@@ -871,83 +875,3 @@ int mic_proc_init(struct mic_device *mdev)
 	mic_proc_config_virtio(mic_proc);
 	return 0;
 }
-#endif
-#if 0
-static int mic_proc_probe(struct platform_device *pdev)
-{
-	struct mic_proc *mic_proc;
-
-	mic_proc = kzalloc(sizeof(struct mic_proc), GFP_KERNEL);
-	if (!mic_proc) {
-		dev_dbg(&pdev->dev,"%s: kzalloc failed\n", __func__);
-		return -ENOMEM;
-	}
-
-	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(64);
-	pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
-
-	INIT_LIST_HEAD(&mic_proc->lvdevs);
-
-	mic_proc->dev = &pdev->dev;
-	mic_proc_config_virtio(mic_proc);
-	return 0;
-}
-
-/*
- * TODO:make sure all other kmallocs are freed.
- */
-static int mic_proc_remove(struct platform_device *pdev)
-{
-	struct mic_proc *mic_proc = platform_get_drvdata(pdev);
-
-	dev_dbg(&pdev->dev,"%s\n", __func__);
-	kfree(mic_proc);
-	platform_set_drvdata(pdev, NULL);
-	return 0;
-}
-
-static struct platform_driver mic_proc_driver = {
-	.probe	= mic_proc_probe,
-	.remove	= mic_proc_remove,
-	.driver = {
-		.name	= LDRV_NAME,
-		.owner	= THIS_MODULE,
-	},
-};
-bool is_host = true;
-int __init mic_proc_init(void)
-{
-	int ret = 0;
-
-	/*
-	 * Only support one dummy device for testing
-	 */
-	if (unlikely(mic_proc_device))
-		return -EEXIST;
-
-	if(!is_host) {
-		printk(KERN_INFO "mic_proc: don't run on BSP. Exiting\n");
-		return ret;
-	}
-
-	ret = platform_driver_register(&mic_proc_driver);
-	if (unlikely(ret))
-		return ret;
-
-	mic_proc_device = platform_device_register_simple(LDRV_NAME, 0,
-							     NULL, 0);
-	if (IS_ERR(mic_proc_device)) {
-		platform_driver_unregister(&mic_proc_driver);
-		ret = PTR_ERR(mic_proc_device);
-	}
-
-	return ret;
-}
-late_initcall(mic_proc_init);
-
-static void __exit mic_proc_exit(void)
-{
-	platform_device_unregister(mic_proc_device);
-	platform_driver_unregister(&mic_proc_driver);
-}
-#endif

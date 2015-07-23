@@ -35,6 +35,7 @@
 #include "mic_smpt.h"
 #include "mic_fops.h"
 #include "mic_virtio.h"
+#include "mic_proc.h"
 
 static const char mic_driver_name[] = "mic";
 
@@ -290,6 +291,7 @@ static void mic_device_uninit(struct mic_device *mdev)
  *
  * returns 0 on success, < 0 on failure.
  */
+extern int mic_proc_init(struct mic_device *mdev);
 static int mic_probe(struct pci_dev *pdev,
 		const struct pci_device_id *ent)
 {
@@ -411,7 +413,20 @@ static int mic_probe(struct pci_dev *pdev,
 		goto cleanup_debug_dir;
 	}
 	atomic_inc(&g_num_mics);
+#ifdef CONFIG_MIC_RPMSG
+	rc = mic_proc_init(mdev);
+	if(rc) {
+		dev_err(&pdev->dev, "mic rpmsg virtio init failed\n");
+		goto cleanup_cdev;
+	}
+#endif
+
 	return 0;
+
+#ifdef CONFIG_MIC_RPMSG
+cleanup_cdev:
+	cdev_del(&mdev->cdev);
+#endif
 cleanup_debug_dir:
 	mic_delete_debug_dir(mdev);
 	mutex_lock(&mdev->mic_mutex);

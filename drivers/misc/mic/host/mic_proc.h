@@ -154,7 +154,7 @@ struct rproc_vdev {
 	u32 rsc_offset;
 };
 
-struct dummy_rproc_resourcetable {
+struct mic_proc_resourcetable {
 	struct resource_table		main_hdr;
 	u32				offset[1];
 	struct fw_rsc_hdr		rsc_hdr_vdev;
@@ -172,14 +172,12 @@ struct mic_proc {
 	struct device *dev;
 	struct list_head lvdevs;
 	struct resource_table *table_ptr;
+	dma_addr_t table_dma_addr;
 	struct idr notifyids;
 	void *priv;
-	u32 table_csum;
-	u64 intr_count;
 	int db;
 	struct mic_irq *db_cookie;
 };
-
 
 static inline struct rproc_vdev *vdev_to_rvdev(struct virtio_device *vdev)
 {
@@ -198,5 +196,7 @@ static inline struct rproc_vring *vringh_to_rvring(struct vringh *vrh)
 	struct rproc_vringh *rvrh = container_of(vrh, struct rproc_vringh, vrh);
 	return rvrh->rvring;
 }
+
+int mic_proc_init(struct mic_device *mdev);
 
 #endif /* MIC_PROC_H */

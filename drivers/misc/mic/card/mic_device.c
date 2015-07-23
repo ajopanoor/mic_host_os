@@ -45,7 +45,7 @@ static void mic_notify_host(u8 state)
 	struct mic_bootparam __iomem *bootparam = mdrv->dp;
 
 	iowrite8(state, &bootparam->shutdown_status);
-	dev_dbg(mdrv->dev, "%s %d system_state %d\n",
+	dev_info(mdrv->dev, "%s %d system_state %d\n",
 		__func__, __LINE__, state);
 	mic_send_intr(&mdrv->mdev, ioread8(&bootparam->c2h_shutdown_db));
 }
@@ -108,7 +108,8 @@ static int __init mic_dp_init(void)
 	struct mic_driver *mdrv = g_drv;
 	struct mic_device *mdev = &mdrv->mdev;
 	struct mic_bootparam __iomem *bootparam;
-	u64 lo, hi, dp_dma_addr;
+	void *rsc_va = NULL;
+	u64 lo, hi, dp_dma_addr, rsc_dma_addr;
 	u32 magic;
 
 	lo = mic_read_spad(&mdrv->mdev, MIC_DPLO_SPAD);
@@ -126,6 +127,19 @@ static int __init mic_dp_init(void)
 		dev_err(mdrv->dev, "bootparam magic mismatch 0x%x\n", magic);
 		return -EIO;
 	}
+
+	lo = mic_read_spad(&mdrv->mdev, 12);
+	hi = mic_read_spad(&mdrv->mdev, 13);
+
+	rsc_dma_addr = lo | (hi << 32);
+	rsc_va = mic_card_map(mdev, rsc_dma_addr, PAGE_SIZE);
+	if (!rsc_va) {
+		dev_err(mdrv->dev, "Cannot remap rpsmg rsc table\n");
+		return -ENOMEM;
+	}
+	dev_info(mdrv->dev, "rpmsg rsc table, va=%p,va[0]=%x\n", va,
+			((u32 *)rsc_va)[0]);
+
 	return 0;
 }
 
