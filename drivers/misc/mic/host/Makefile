@@ -12,4 +12,4 @@ mic_host-objs += mic_boot.o
 mic_host-objs += mic_debugfs.o
 mic_host-objs += mic_fops.o
 mic_host-objs += mic_virtio.o
-mic_host-objs += mic_rpmsg_virtio.o
+mic_host-objs += mic_rpmsg_host.o

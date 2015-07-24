@@ -13,7 +13,7 @@
 #include "mic_device.h"
 #include "mic_smpt.h"
 #include "mic_intr.h"
-#include "mic_proc.h"
+#include "../common/mic_proc.h"
 
 struct mic_proc_resourcetable mproc_resourcetable
 	__attribute__((section(".resource_table"), aligned(PAGE_SIZE))) =
@@ -21,7 +21,8 @@ struct mic_proc_resourcetable mproc_resourcetable
 	.main_hdr = {
 		.ver =		1,			/* version */
 		.num =		1,			/* we have 2 entries - mem and rpmsg */
-		.reserved =	{ 0, 0 },		/* reserved - must be 0 */
+		.h2c_db =	0,
+		.c2h_db =	0,
 	},
 	.offset = {					/* offsets to our resource entries */
 		offsetof(struct mic_proc_resourcetable, rsc_hdr_vdev),
@@ -375,7 +376,7 @@ static struct virtqueue *lp_find_vq(struct virtio_device *vdev,
 	if (i == ARRAY_SIZE(lvdev->vring))
 		return ERR_PTR(-EINVAL);
 
-	ret = mic_proc_map_vring(lvdev, i);
+	ret = mic_proc_alloc_vring(lvdev,i);
 	if (ret)
 		return ERR_PTR(ret);
 
@@ -816,7 +817,7 @@ static int mic_proc_config_virtio(struct mic_proc *mic_proc)
 		dev_err(dev, "request irq failed\n");
 		goto free_rsc_table;
 	}
-	rsc_va->rsc_vdev.notifyid = mic_proc->db;
+	rsc_va->main_hdr.c2h_db= mic_proc->db;
 
 	mic_proc->table_dma_addr = mic_map_single(mdev, rsc_va, PAGE_SIZE);
 	if(mic_map_error(mic_proc->table_dma_addr)){

@@ -29,7 +29,7 @@
 #include <linux/mic_bus.h>
 #include "../bus/scif_bus.h"
 #include "mic_intr.h"
-#include "mic_proc.h"
+#include "../common/mic_proc.h"
 
 /* The maximum number of MIC devices supported in a single host system. */
 #define MIC_MAX_NUM_DEVS 256

@@ -35,7 +35,7 @@
 #include "mic_smpt.h"
 #include "mic_fops.h"
 #include "mic_virtio.h"
-#include "mic_proc.h"
+#include "../common/mic_proc.h"
 
 static const char mic_driver_name[] = "mic";
 

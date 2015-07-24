@@ -46,7 +46,8 @@
 struct resource_table {
 	u32 ver;
 	u32 num;
-	u32 reserved[2];
+	u32 h2c_db;
+	u32 c2h_db;
 	u32 offset[0];
 } __packed;
 
@@ -171,7 +172,11 @@ struct mic_proc {
 	struct mic_device *mdev;
 	struct device *dev;
 	struct list_head lvdevs;
+#ifndef INTEL_MIC_CARD
 	struct resource_table *table_ptr;
+#else
+	struct resource_table __iomem *table_ptr;
+#endif
 	dma_addr_t table_dma_addr;
 	struct idr notifyids;
 	void *priv;
