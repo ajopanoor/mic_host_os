@@ -11,19 +11,11 @@
 #include <linux/scatterlist.h>
 #include <linux/mic_common.h>
 #include "mic_device.h"
-#include "mic_smpt.h"
-#include "mic_intr.h"
 #include "../common/mic_proc.h"
+#include "../common/mic_dev.h"
 
-
-#define CONFIG_HOMOGENEOUS_AP	1
-#ifdef CONFIG_HOMOGENEOUS_AP
-static int vrh_id_map[RVDEV_NUM_VRINGS] = { 2, -1, -1, -1 };
-static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1,  0,  3, -1 };
-#else
-static int vrh_id_map[RVDEV_NUM_VRINGS] = { 0, -1, -1, -1 };
-static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1,  2,  3, -1 };
-#endif
+static int vrh_id_map[RVDEV_NUM_VRINGS] = { 0, 1 };
+static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1, 0 };
 
 static bool mic_proc_virtio_notify(struct virtqueue *vq)
 {
@@ -368,10 +360,9 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 		lvring = &lvdev->vring[notifyid];
 		switch (notifyid) {
 			case 0:
-			case 1:
 				ret = vring_interrupt(1, lvring->vq);
 				break;
-			case 2:
+			case 1:
 				if (lvring->rvringh && lvring->rvringh->vringh_cb){
 					lvring->rvringh->vringh_cb(&lvring->rvdev->vdev,
 							&lvring->rvringh->vrh); 
@@ -382,9 +373,6 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 								notifyid);
 					ret = IRQ_NONE;
 				}
-				break;
-			case 3:
-				//ret = vring_avail_interrupt(1, lvring->vq);
 				break;
 			default:
 				printk(KERN_INFO "%s: Failed interrupt!"
@@ -618,12 +606,6 @@ static int mic_proc_handle_vdev(struct mic_proc *mic_proc, struct fw_rsc_vdev *r
 		return -EINVAL;
 	}
 
-	/* make sure reserved bytes are zeroes */
-	if (rsc->reserved[0] || rsc->reserved[1]) {
-		printk(KERN_INFO "mic_proc: vdev rsc has non zero reserved bytes\n");
-		return -EINVAL;
-	}
-
 	printk(KERN_INFO "mic_proc: vdev rsc: id %d gfeatures %x dfeatures %x"
 			"cfg len %d %dvrings\n",rsc->id, rsc->gfeatures,
 			rsc->dfeatures, rsc->config_len, rsc->num_of_vrings);
@@ -648,7 +630,7 @@ static int mic_proc_handle_vdev(struct mic_proc *mic_proc, struct fw_rsc_vdev *r
 
 	/* remember the resource offset*/
 	lvdev->rsc_offset = offset;
-	lvdev->rproc = (void*)mic_proc; // TODO: Remove the Hack
+	lvdev->rproc = (void*)mic_proc; // FIXME: Remove the Hack
 
 	list_add_tail(&lvdev->node, &mic_proc->lvdevs);
 	mic_proc->priv = lvdev;
@@ -691,35 +673,32 @@ static int mic_proc_handle_resources(struct mic_proc *mic_proc, int len,
 				  mic_proc_handle_resource_t handlers[RSC_LAST])
 {
 	mic_proc_handle_resource_t handler;
+	struct device *dev = mic_proc->dev;
 	int ret = 0, i;
 
 	for (i = 0; i < mic_proc->table_ptr->num; i++) {
-		int offset = mic_proc->table_ptr->offset[i];
 		struct fw_rsc_hdr *hdr = (void *)mic_proc->table_ptr + offset;
+		int offset = mic_proc->table_ptr->offset[i];
 		int avail = len - offset - sizeof(*hdr);
 		void *rsc = (void *)hdr + sizeof(*hdr);
 
 		/* make sure table isn't truncated */
 		if (avail < 0) {
-			printk(KERN_INFO "mic_proc: rsc table is truncated\n");
+			dev_err(dev, "mic_proc: rsc table is truncated\n");
 			return -EINVAL;
 		}
-
 		if (hdr->type >= RSC_LAST) {
-			printk(KERN_INFO "mic_proc: unsupported resource %d\n",
+			dev_err(dev, "mic_proc: unsupported resource %d\n",
 					hdr->type);
 			continue;
 		}
-
 		handler = handlers[hdr->type];
 		if (!handler)
 			continue;
-
 		ret = handler(mic_proc, rsc, offset + sizeof(*hdr), avail);
 		if (ret)
 			break;
 	}
-
 	return ret;
 }
 
@@ -731,10 +710,10 @@ static int mic_proc_handle_resources(struct mic_proc *mic_proc, int len,
 static int mic_proc_config_virtio(struct mic_proc *mic_proc)
 {
 	int ret, tablesz = sizeof(struct mic_proc_resourcetable);
+	struct mic_proc_resourcetable __iomem *rsc_va;
 	struct mic_device *mdev = mic_proc->mdev;
 	struct device *dev = mic_proc->dev;
 	u64 lo, hi, rsc_dma_addr;
-	struct mic_proc_resourcetable __iomem *rsc_va;
 
 	/* allocate resource table, copy lrsc, map va*/
 	lo = mic_read_spad(&mdrv->mdev, MIC_RPLO_SPAD);
@@ -743,13 +722,9 @@ static int mic_proc_config_virtio(struct mic_proc *mic_proc)
 	rsc_dma_addr = lo | (hi << 32);
 	rsc_va = mic_card_map(mdev, rsc_dma_addr, PAGE_SIZE);
 	if (!rsc_va) {
-		dev_err(mdrv->dev, "Cannot remap rpsmg rsc table\n");
+		dev_err(dev, "Cannot remap rpsmg rsc table\n");
 		return -ENOMEM;
 	}
-
-	dev_info(mdrv->dev, "rpmsg rsc table, va=%p,va[0]=%x\n", va,
-			((u32 *)rsc_va)[0]);
-
 	mic_proc->table_dma_addr = rsc_dma_addr;
 	mic_proc->table_ptr = rsc_va;
 
@@ -768,42 +743,50 @@ static int mic_proc_config_virtio(struct mic_proc *mic_proc)
 	ret = mic_proc_handle_resources(mic_proc, tablesz, mic_proc_count_vrings_handler);
 	if (ret) {
 		dev_err(dev, "rsc table resource count failed\n");
-		goto unmap_dma_addr;
+		goto free_irq;
 	}
 
 	/* look for virtio devices and register them */
 	ret = mic_proc_handle_resources(mic_proc, tablesz, mic_proc_vdev_handler);
 	if (ret) {
 		dev_err(dev, "rsc table handle vdev failed\n");
-		goto unmap_dma_addr;
+		goto free_irq;
 	}
+
+	dev_info(mdrv->dev, "rpmsg rsc table va=%p dma_addr %p h2c_db %d\n",
+			rsc_va, mic_proc->table_dma_addr, mic_proc->db);
 	return 0;
 
+free_irq:
+	mic_free_irq(mdev, mic_proc->db_cookie, mic_proc);
 unmap_dma_addr:
 	mic_card_unmap(mdev, mdev, mic_proc->table_dma_addr);
 	mic_proc->table_ptr = NULL;
-free_irq:
-	mic_free_irq(mdev, mic_proc->db_cookie, mic_proc);
 	return ret;
 }
 
-int mic_proc_init(struct mic_device *mdev)
+int mic_proc_init(struct mic_driver *mdrv)
 {
 	struct mic_proc *mic_proc;
+	int ret = -ENOMEM;
 
 	mic_proc = kzalloc(sizeof(struct mic_proc), GFP_KERNEL);
 	if (!mic_proc) {
-		dev_err(mdev->sdev->parent,"%s: kzalloc failed\n", __func__);
-		return -ENOMEM;
+		dev_err(mdrv->dev,"%s: kzalloc failed\n", __func__);
+		return ret;
 	}
 
 	INIT_LIST_HEAD(&mic_proc->lvdevs);
 
-	mic_proc->dev = mdev->sdev->parent;
-	mic_proc->mdev = mdev;
-	mdev->mic_proc = mic_proc;
+	mic_proc->dev = mdrv->dev;
 
-		mic_proc_config_virtio(mic_proc);
-
+	ret = mic_proc_config_virtio(mic_proc);
+	if (ret) {
+		dev_err(mdrv->dev,"%s: virtio config failed\n", __func__);
+		goto err;
+	}
 	return 0;
+err:
+	kfree(mic_proc);
+	return ret;
 }

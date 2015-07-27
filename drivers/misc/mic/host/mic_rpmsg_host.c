@@ -20,7 +20,7 @@ struct mic_proc_resourcetable mproc_resourcetable
 {
 	.main_hdr = {
 		.ver =		1,			/* version */
-		.num =		1,			/* we have 2 entries - mem and rpmsg */
+		.num =		1,			/* 1 entry for rpmsg */
 		.h2c_db =	0,
 		.c2h_db =	0,
 	},
@@ -37,31 +37,17 @@ struct mic_proc_resourcetable mproc_resourcetable
 		.gfeatures =	0,			/* negotiated features - blank */
 		.config_len =	RSC_VDEV_CONFIG_SIZE,	/* config len */
 		.status =	0,			/* status - updated by bsp */
-		.num_of_vrings=	4,			/* we have 3 rings */
+		.num_of_vrings=	2,			/* we have 2 rings */
 		.reserved =	{ 0, 0},		/* reserved */
 	},
 	.rsc_ring0 = {
 		.da =		0,			/* we don't (??) care about the da */
 		.align =	PAGE_SIZE,		/* alignment */
-		.num =		512,			/* number of buffers */
+		.num =		128,			/* number of buffers */
 		.notifyid =	0,			/* magic number for IPC */
 		.reserved =	0,			/* reserved - 0 */
 	},
 	.rsc_ring1 = {
-		.da =		0,			/* we don't (??) care about the da */
-		.align =	PAGE_SIZE,		/* alignment */
-		.num =		512,			/* number of buffers */
-		.notifyid =	0,			/* magic number for IPC */
-		.reserved =	0,			/* reserved - 0 */
-	},
-	.rsc_ring2 = {
-		.da =		0,			/* we don't (??) care about the da */
-		.align =	PAGE_SIZE,		/* alignment */
-		.num =		512,			/* number of buffers */
-		.notifyid =	0,			/* magic number for IPC */
-		.reserved =	0,			/* reserved - 0 */
-	},
-	.rsc_ring3 = {
 		.da =		0,			/* we don't (??) care about the da */
 		.align =	PAGE_SIZE,		/* alignment */
 		.num =		128,			/* number of buffers */
@@ -72,14 +58,8 @@ struct mic_proc_resourcetable mproc_resourcetable
 
 struct mic_proc_resourcetable *lrsc = &mproc_resourcetable;
 
-#define CONFIG_HOMOGENEOUS_AP	1
-#ifdef CONFIG_HOMOGENEOUS_AP
-static int vrh_id_map[RVDEV_NUM_VRINGS] = { 2, -1, -1, -1 };
-static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1,  0,  3, -1 };
-#else
-static int vrh_id_map[RVDEV_NUM_VRINGS] = { 0, -1, -1, -1 };
-static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1,  2,  3, -1 };
-#endif
+static int vrh_id_map[RVDEV_NUM_VRINGS] = { 0, 1 };
+static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1, 0 };
 
 static bool mic_proc_virtio_notify(struct virtqueue *vq)
 {
@@ -425,10 +405,9 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 		lvring = &lvdev->vring[notifyid];
 		switch (notifyid) {
 			case 0:
-			case 1:
 				ret = vring_interrupt(1, lvring->vq);
 				break;
-			case 2:
+			case 1:
 				if (lvring->rvringh && lvring->rvringh->vringh_cb){
 					lvring->rvringh->vringh_cb(&lvring->rvdev->vdev,
 							&lvring->rvringh->vrh); 
@@ -439,9 +418,6 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 								notifyid);
 					ret = IRQ_NONE;
 				}
-				break;
-			case 3:
-				//ret = vring_avail_interrupt(1, lvring->vq);
 				break;
 			default:
 				printk(KERN_INFO "%s: Failed interrupt!"
@@ -675,12 +651,6 @@ static int mic_proc_handle_vdev(struct mic_proc *mic_proc, struct fw_rsc_vdev *r
 		return -EINVAL;
 	}
 
-	/* make sure reserved bytes are zeroes */
-	if (rsc->reserved[0] || rsc->reserved[1]) {
-		printk(KERN_INFO "mic_proc: vdev rsc has non zero reserved bytes\n");
-		return -EINVAL;
-	}
-
 	printk(KERN_INFO "mic_proc: vdev rsc: id %d gfeatures %x dfeatures %x"
 			"cfg len %d %dvrings\n",rsc->id, rsc->gfeatures,
 			rsc->dfeatures, rsc->config_len, rsc->num_of_vrings);
@@ -705,7 +675,7 @@ static int mic_proc_handle_vdev(struct mic_proc *mic_proc, struct fw_rsc_vdev *r
 
 	/* remember the resource offset*/
 	lvdev->rsc_offset = offset;
-	lvdev->rproc = (void*)mic_proc; // TODO: Remove the Hack
+	lvdev->rproc = (void*)mic_proc; // FIXME: Remove the Hack
 
 	list_add_tail(&lvdev->node, &mic_proc->lvdevs);
 	mic_proc->priv = lvdev;
@@ -714,12 +684,10 @@ static int mic_proc_handle_vdev(struct mic_proc *mic_proc, struct fw_rsc_vdev *r
 	ret = mic_proc_add_virtio_dev(mic_proc, lvdev, rsc->id);
 	if (ret)
 		goto remove_lvdev;
-
 	return 0;
 remove_lvdev:
 	list_del(&lvdev->node);
-free_lvdev:
-	kfree(lvdev);
+free_lvdev: kfree(lvdev);
 	return ret;
 }
 
@@ -748,6 +716,7 @@ static int mic_proc_handle_resources(struct mic_proc *mic_proc, int len,
 				  mic_proc_handle_resource_t handlers[RSC_LAST])
 {
 	mic_proc_handle_resource_t handler;
+	struct device *dev = mic_proc->dev;
 	int ret = 0, i;
 
 	for (i = 0; i < mic_proc->table_ptr->num; i++) {
@@ -758,16 +727,14 @@ static int mic_proc_handle_resources(struct mic_proc *mic_proc, int len,
 
 		/* make sure table isn't truncated */
 		if (avail < 0) {
-			printk(KERN_INFO "mic_proc: rsc table is truncated\n");
+			dev_err(dev, "mic_proc: rsc table is truncated\n");
 			return -EINVAL;
 		}
-
 		if (hdr->type >= RSC_LAST) {
-			printk(KERN_INFO "mic_proc: unsupported resource %d\n",
+			dev_err(dev, "mic_proc: unsupported resource %d\n",
 					hdr->type);
 			continue;
 		}
-
 		handler = handlers[hdr->type];
 		if (!handler)
 			continue;
@@ -776,20 +743,19 @@ static int mic_proc_handle_resources(struct mic_proc *mic_proc, int len,
 		if (ret)
 			break;
 	}
-
 	return ret;
 }
 
 /*
  * Take the mic_proc and attach the rings to virtio devices to register
- * on the local processor.
+ * on the host processor.
  *
  */
 static int mic_proc_config_virtio(struct mic_proc *mic_proc)
 {
 	int ret, tablesz = sizeof(struct mic_proc_resourcetable);
-	struct mic_proc_resourcetable *rsc_va;
 	struct mic_device *mdev = mic_proc->mdev;
+	struct mic_proc_resourcetable *rsc_va;
 	struct device *dev = mic_proc->dev;
 	char irqname[10];
 
@@ -805,8 +771,7 @@ static int mic_proc_config_virtio(struct mic_proc *mic_proc)
 	memcpy(rsc_va, lrsc, tablesz);
 	mic_proc->table_ptr = (struct resource_table *)rsc_va;
 
-	snprintf(irqname, sizeof(irqname), "mic%dvirtio%d", rsc_va->rsc_vdev.id,
-		 rsc_va->rsc_vdev.id);
+	snprintf(irqname, sizeof(irqname), "mic-virtio%d", rsc_va->rsc_vdev.id);
 	mic_proc->db = mic_next_db(mdev);
 	mic_proc->db_cookie = mic_request_threaded_irq(mdev,
 					       mic_proc_callback,
@@ -817,7 +782,7 @@ static int mic_proc_config_virtio(struct mic_proc *mic_proc)
 		dev_err(dev, "request irq failed\n");
 		goto free_rsc_table;
 	}
-	rsc_va->main_hdr.c2h_db= mic_proc->db;
+	rsc_va->main_hdr.c2h_db = mic_proc->db;
 
 	mic_proc->table_dma_addr = mic_map_single(mdev, rsc_va, PAGE_SIZE);
 	if(mic_map_error(mic_proc->table_dma_addr)){
@@ -861,18 +826,25 @@ free_rsc_table:
 int mic_proc_init(struct mic_device *mdev)
 {
 	struct mic_proc *mic_proc;
+	int ret = -ENOMEM;
 
 	mic_proc = kzalloc(sizeof(struct mic_proc), GFP_KERNEL);
 	if (!mic_proc) {
-		dev_dbg(mdev->sdev->parent,"%s: kzalloc failed\n", __func__);
-		return -ENOMEM;
+		dev_err(mdev->sdev->parent,"%s: kzalloc failed\n", __func__);
+		return ret;
 	}
 
 	INIT_LIST_HEAD(&mic_proc->lvdevs);
 
 	mic_proc->dev = mdev->sdev->parent;
 	mic_proc->mdev = mdev;
-	mdev->mic_proc = mic_proc;
-	mic_proc_config_virtio(mic_proc);
+	ret = mic_proc_config_virtio(mic_proc);
+	if(ret) {
+		dev_err(mdev->sdev->parent,"%s: virtio config failed\n", __func__);
+		goto err;
+	}
 	return 0;
+err:
+	kfree(mic_proc);
+	return ret;
 }
