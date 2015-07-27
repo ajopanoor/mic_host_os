@@ -26,6 +26,7 @@
 #include <linux/mic_common.h>
 #include <linux/mic_bus.h>
 #include "../common/mic_dev.h"
+#include "../common/mic_proc.h"
 #include "mic_device.h"
 #include "mic_smpt.h"
 #include "mic_virtio.h"
@@ -418,6 +419,8 @@ retry:
 	mdev->intr_ops->enable_interrupts(mdev);
 	mdev->ops->write_spad(mdev, MIC_DPLO_SPAD, mdev->dp_dma_addr);
 	mdev->ops->write_spad(mdev, MIC_DPHI_SPAD, mdev->dp_dma_addr >> 32);
+	mdev->ops->write_spad(mdev, MIC_RPLO_SPAD, mdev->mic_proc->table_dma_addr);
+	mdev->ops->write_spad(mdev, MIC_RPHI_SPAD, mdev->mic_proc->table_dma_addr >> 32);
 	mdev->ops->send_firmware_intr(mdev);
 	mic_set_state(mdev, MIC_ONLINE);
 	goto unlock_ret;

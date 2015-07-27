@@ -838,6 +838,7 @@ int mic_proc_init(struct mic_device *mdev)
 
 	mic_proc->dev = mdev->sdev->parent;
 	mic_proc->mdev = mdev;
+	mdev->mic_proc = mic_proc;
 	ret = mic_proc_config_virtio(mic_proc);
 	if(ret) {
 		dev_err(mdev->sdev->parent,"%s: virtio config failed\n", __func__);
