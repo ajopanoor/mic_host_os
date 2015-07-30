@@ -46,8 +46,10 @@
 struct resource_table {
 	u32 ver;
 	u32 num;
-	u32 h2c_db;
-	u32 c2h_db;
+	s8 h2c_db;
+	s8 c2h_db;
+	u8 mic_ready;
+	u8 reserve[5];
 	u32 offset[0];
 } __packed;
 
