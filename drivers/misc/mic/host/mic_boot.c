@@ -419,8 +419,10 @@ retry:
 	mdev->intr_ops->enable_interrupts(mdev);
 	mdev->ops->write_spad(mdev, MIC_DPLO_SPAD, mdev->dp_dma_addr);
 	mdev->ops->write_spad(mdev, MIC_DPHI_SPAD, mdev->dp_dma_addr >> 32);
+#ifdef CONFIG_MIC_RPMSG
 	mdev->ops->write_spad(mdev, MIC_RPLO_SPAD, mdev->mic_proc->table_dma_addr);
 	mdev->ops->write_spad(mdev, MIC_RPHI_SPAD, mdev->mic_proc->table_dma_addr >> 32);
+#endif
 	mdev->ops->send_firmware_intr(mdev);
 	mic_set_state(mdev, MIC_ONLINE);
 	goto unlock_ret;

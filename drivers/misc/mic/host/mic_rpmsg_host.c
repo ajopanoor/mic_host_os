@@ -849,3 +849,14 @@ err:
 	kfree(mic_proc);
 	return ret;
 }
+
+void mic_proc_uninit(struct mic_device *mdev)
+{
+	struct mic_proc *mic_proc;
+
+	mic_proc = mdev->mic_proc;
+	mic_unmap_single(mdev, mic_proc->table_dma_addr, PAGE_SIZE);
+	mic_free_irq(mdev, mic_proc->db_cookie, mic_proc);
+	kfree(mic_proc->table_ptr);
+	kfree(mic_proc);
+}

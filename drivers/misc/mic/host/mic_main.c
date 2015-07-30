@@ -291,7 +291,6 @@ static void mic_device_uninit(struct mic_device *mdev)
  *
  * returns 0 on success, < 0 on failure.
  */
-extern int mic_proc_init(struct mic_device *mdev);
 static int mic_probe(struct pci_dev *pdev,
 		const struct pci_device_id *ent)
 {
@@ -477,6 +476,9 @@ static void mic_remove(struct pci_dev *pdev)
 		return;
 
 	mic_stop(mdev, false);
+#ifdef CONFIG_MIC_RPMSG
+	mic_proc_uninit(mdev);
+#endif
 	atomic_dec(&g_num_mics);
 	cdev_del(&mdev->cdev);
 	mic_delete_debug_dir(mdev);

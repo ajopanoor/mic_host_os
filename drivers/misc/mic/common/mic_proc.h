@@ -201,8 +201,10 @@ static inline struct rproc_vring *vringh_to_rvring(struct vringh *vrh)
 	struct rproc_vringh *rvrh = container_of(vrh, struct rproc_vringh, vrh);
 	return rvrh->rvring;
 }
+
 #ifndef INTEL_MIC_CARD
 int mic_proc_init(struct mic_device *mdev);
+void mic_proc_uninit(struct mic_device *mdev);
 #else
 int mic_proc_init(struct mic_driver *mdrv);
 #endif
