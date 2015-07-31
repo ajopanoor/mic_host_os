@@ -102,7 +102,7 @@ struct fw_rsc_vdev_config {
 
 /* we currently support only two vrings per rvdev */
 
-#define RVDEV_NUM_VRINGS 4
+#define RVDEV_NUM_VRINGS 3
 
 /**
  * struct rproc_vringh - remoteproc host vring
@@ -165,7 +165,6 @@ struct mic_proc_resourcetable {
 	struct fw_rsc_vdev_vring	rsc_ring0;
 	struct fw_rsc_vdev_vring	rsc_ring1;
 	struct fw_rsc_vdev_vring	rsc_ring2;
-	struct fw_rsc_vdev_vring	rsc_ring3;
 	struct fw_rsc_vdev_config	rsc_vdev_cfg;
 };
 

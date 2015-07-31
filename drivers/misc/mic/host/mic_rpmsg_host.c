@@ -53,13 +53,20 @@ struct mic_proc_resourcetable mproc_resourcetable
 		.num =		128,			/* number of buffers */
 		.notifyid =	0,			/* magic number for IPC */
 		.reserved =	0,			/* reserved - 0 */
+	},
+	.rsc_ring2 = {
+		.da =		0,			/* we don't (??) care about the da */
+		.align =	PAGE_SIZE,		/* alignment */
+		.num =		128,			/* number of buffers */
+		.notifyid =	0,			/* magic number for IPC */
+		.reserved =	0,			/* reserved - 0 */
 	}
 };
 
 struct mic_proc_resourcetable *lrsc = &mproc_resourcetable;
 
-static int vrh_id_map[RVDEV_NUM_VRINGS] = { 0, 1 };
-static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1, 0 };
+static int vrh_id_map[RVDEV_NUM_VRINGS] = { 0, -1, -1 };
+static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1,  2, -1 };
 
 static bool mic_proc_virtio_notify(struct virtqueue *vq)
 {

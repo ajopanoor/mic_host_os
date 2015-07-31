@@ -94,5 +94,8 @@ comment "RPMSG for Xeon Phi"
 config MIC_RPMSG
 	bool "Virtio driver for RPMSG"
 	depends on 64BIT && X86 && INTEL_MIC_BUS
+	select VIRTIO
+	select RPMSG
+	select VHOST_RING
 	default y
 
