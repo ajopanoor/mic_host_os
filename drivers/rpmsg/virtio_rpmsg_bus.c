@@ -33,16 +33,15 @@
 #include <linux/wait.h>
 #include <linux/rpmsg.h>
 #include <linux/mutex.h>
+#include <linux/genalloc.h>
+#include <linux/log2.h>
 
 /**
  * struct virtproc_info - virtual remote processor state
  * @vdev:	the virtio device
  * @rvq:	rx virtqueue
  * @svq:	tx virtqueue
- * @rbufs:	kernel address of rx buffers
- * @sbufs:	kernel address of tx buffers
  * @num_bufs:	total number of buffers for rx and tx
- * @last_sbuf:	index of last tx buffer used
  * @bufs_dma:	dma base addr of the buffers
  * @tx_lock:	protects svq, sbufs and sleepers, to allow concurrent senders.
  *		sending a message might require waking up a dozing remote
@@ -52,6 +51,10 @@
  * @sendq:	wait queue of sending contexts waiting for a tx buffers
  * @sleepers:	number of senders that are waiting for a tx buffer
  * @ns_ept:	the bus's name service endpoint
+ * @pool_size:	size of the buffer pool for variable size messages
+ * @pool:	pointer/handle to the gen_pool
+ * @bufs_va:	kernel address of variable size buffer pool.
+ * @max_frees:	max number used buffer to be freed at a stretch
  *
  * This structure stores the rpmsg state of a given virtio remote processor
  * device (there might be several virtio proc devices for each physical
@@ -60,9 +63,7 @@
 struct virtproc_info {
 	struct virtio_device *vdev;
 	struct virtqueue *rvq, *svq;
-	void *rbufs, *sbufs;
 	unsigned int num_bufs;
-	int last_sbuf;
 	dma_addr_t bufs_dma;
 	struct mutex tx_lock;
 	struct idr endpoints;
@@ -70,6 +71,39 @@ struct virtproc_info {
 	wait_queue_head_t sendq;
 	atomic_t sleepers;
 	struct rpmsg_endpoint *ns_ept;
+	size_t pool_size;
+	struct gen_pool *pool;
+	void *bufs_va;
+	int max_frees;
+};
+
+/*
+ * MAX_SBUF_SIZE is the maximum size of a RPMSG send buffer. So on a single
+ * rpmsg_{try}send{to, _offchannel} request, we limit the maximum send buffer
+ * size to 64K for security reasons.
+ */
+#define MAX_SBUF_SIZE		(64 * 1024)
+
+/*
+ * RPMSG_MAX_SG_SIZE is the max size of scatter-gather list in buf_info used
+ * for variable sized transmits. As the variable size buffer allocations doesn't
+ * mandates page boundary alignment, a maximum size buffer allocation can span
+ * upto an additional page for the remainder.
+ */
+#define RPMSG_MAX_SG_SIZE	((MAX_SBUF_SIZE/PAGE_SIZE) + 1)
+
+/**
+ * struct buf_info - Tx buffer info
+ * @len:  length of the send buffer/msg
+ * @addr: virtual address of the send buffer
+ * @sg:   scatter gather list for populating the virtqueue
+ *
+ * This buffer is used to keep the context of a transmitted message.
+ */
+struct buf_info {
+	size_t len;
+	void *addr;
+	struct scatterlist sg[RPMSG_MAX_SG_SIZE];
 };
 
 /**
@@ -568,28 +602,230 @@ static int rpmsg_destroy_channel(struct virtproc_info *vrp,
 	return 0;
 }
 
-/* super simple buffer "allocator" that is just enough for now */
-static void *get_a_tx_buf(struct virtproc_info *vrp)
+/**
+ * rpmsg_destroy_genpool() - destroy the genpool
+ * @vrp: pointer to virtual remote processor state
+ *
+ * This function destroy's the genpool and frees up the memory used by the
+ * genpool library.
+ */
+static void rpmsg_destroy_genpool(struct virtproc_info *vrp)
 {
-	unsigned int len;
-	void *ret;
+	BUG_ON(!vrp->pool);
+	dma_free_coherent(vrp->vdev->dev.parent->parent, vrp->pool_size,
+			vrp->bufs_va, vrp->bufs_dma);
+	gen_pool_destroy(vrp->pool);
+	vrp->pool = NULL;
+}
 
-	/* support multiple concurrent senders */
-	mutex_lock(&vrp->tx_lock);
+/**
+ * rpmsg_create_genpool() - creates the genpool
+ * @vrp: pointer to virtual remote processor state
+ *
+ * This function creates a variable size buffer pool for RPMsg. The pool of
+ * memory gets allocated via dma_alloc_coherent from CMA space and the genpool
+ * library is used for memory management. Receive buffers are of fixed size
+ * (RPMSG_BUF_SIZE), so the buffer allocations happen at a 512 byte boundary.
+ * The num_bufs in vrp (derived based on vring size) is used to decide the
+ * pool size. The number of buffers allocated for receives remains same as
+ * before (ie. half of num_bufs). They gets allocated and populated in the
+ * receive ring during driver probe as before.
+ *
+ * Deriving an ideal pool size for transmits depends heavily on volume of the
+ * data transferred to the remoteprocessor. It also depends on the memory size
+ * of the architecture, and hence it could be arch dependent. But at the same
+ * time the pool size doesn't have any dependency on the remoteprocessor fw and
+ * is restricted only within the RPMSG driver. So, to keep a reasonable limit,
+ * we reserve, half the number vring size Pages for transmits.
+ *
+ * But at the same time, we limit any single rpmsg_{try}send{to, _offchannel}
+ * request to allocate a pool packet which is not more than 64K for security
+ * reasons.
+ *
+ * Returns 0 on success or -ENOMEM if fails to allocate the pool.
+ */
+static int rpmsg_create_genpool(struct virtproc_info *vrp)
+{
+	int ret = -ENOMEM;
 
 	/*
-	 * either pick the next unused tx buffer
-	 * (half of our buffers are used for sending messages)
+	 * gen_pool_create mandates user of the pool to provide the a minimum
+	 * allocation order as its log base 2 value. Since we limit the buffer
+	 * allocations at a 512 Byte boundary especially for receives, we pass
+	 * the minimum order as ilog2 of RPMSG_BUF_SIZE.
 	 */
-	if (vrp->last_sbuf < vrp->num_bufs / 2)
-		ret = vrp->sbufs + RPMSG_BUF_SIZE * vrp->last_sbuf++;
-	/* or recycle a used one */
-	else
-		ret = virtqueue_get_buf(vrp->svq, &len);
+	vrp->pool = gen_pool_create(ilog2(RPMSG_BUF_SIZE), -1);
+	if (!vrp->pool) {
+		dev_err(&vrp->vdev->dev, "failed to create gen pool");
+		return ret;
+	}
 
-	mutex_unlock(&vrp->tx_lock);
+	/*
+	 * Half the size of vring times PAGE_SIZE for tx, and half the size of
+	 * vring times RPMSG_BUF_SIZE for receives. See the above details.
+	 */
+	vrp->pool_size = ((vrp->num_bufs / 2) * PAGE_SIZE) +
+			 ((vrp->num_bufs / 2) * RPMSG_BUF_SIZE);
+
+	/* Allocate the chunk of memory which will passed to genpool later */
+	vrp->bufs_va = dma_alloc_coherent(vrp->vdev->dev.parent->parent,
+				vrp->pool_size, &vrp->bufs_dma, GFP_KERNEL);
+	if (!vrp->bufs_va) {
+		dev_err(&vrp->vdev->dev, "failed to alloc buf pool %p\n",
+								vrp->bufs_va);
+		goto destroy_pool;
+	}
+
+	/* Add the allocated memory to the genpool */
+	ret = gen_pool_add_virt(vrp->pool, (unsigned long)vrp->bufs_va,
+			virt_to_phys(vrp->bufs_va), vrp->pool_size, -1);
+	if (ret)
+		goto free_coherent;
+
+	return 0;
+
+free_coherent:
+	dma_free_coherent(vrp->vdev->dev.parent->parent, vrp->pool_size,
+			vrp->bufs_va, vrp->bufs_dma);
+destroy_pool:
+	gen_pool_destroy(vrp->pool);
 
 	return ret;
+}
+
+/**
+ * free_tx_buf - free up tx resources
+ * @vrp:     pointer to virtual remote processor state
+ * @tx_info: tx buffer info
+ *
+ * Free the buffer to gen_pool and frees tx buf_info.
+ */
+static inline void free_tx_buf(struct virtproc_info *vrp,
+						struct buf_info *tx_info)
+{
+	gen_pool_free(vrp->pool, (unsigned long int)tx_info->addr,
+			tx_info->len);
+	kfree(tx_info);
+}
+
+/**
+ * release_tx_bufs - release the used buffers from virtio tx ring.
+ * @vrp: pointer to virtual remote processor state
+ *
+ * Free the "used" buffers from the tx virtqueue to pool. Caller should acquire
+ * the tx_lock before calling this function.
+ *
+ */
+static void release_tx_bufs(struct virtproc_info *vrp)
+{
+	struct buf_info *tx_info;
+	unsigned int count = 0;
+	unsigned int len;
+
+	while ((count < vrp->max_frees) &&
+			(tx_info = virtqueue_get_buf(vrp->svq, &len))) {
+
+		free_tx_buf(vrp, tx_info);
+		count++;
+	}
+}
+
+/**
+ * get_var_tx_buf - allocate variable size tx buffer
+ * @vrp: pointer to virtual remote processor state
+ * @len: size of the buffer to be allocated.
+ *
+ * Allocate a variable sized tx buffer from the genpool.
+ *
+ * Returns pointer to the buf_info structure if success, else returns NULL
+ */
+static struct buf_info *get_var_tx_buf(struct virtproc_info *vrp, size_t len)
+{
+	struct buf_info *tx_info;
+
+	BUG_ON(!vrp->pool);
+
+	mutex_lock(&vrp->tx_lock);
+
+	/* Free up the used buffers in tx virtio ring */
+	release_tx_bufs(vrp);
+
+	/*
+	 * If the remote processor has not processed the outstanding transmits
+	 * and the virtqueue is getting full, then retry later. Tx now now has
+	 * to go via the wait for completion overhaul.
+	 */
+	if (vrp->svq->num_free < ((len / PAGE_SIZE) + 1)) {
+		dev_dbg(&vrp->vdev->dev, "tx ring full, free %d needed %zu\n",
+				vrp->svq->num_free, ((len / PAGE_SIZE) + 1));
+		goto retry_later;
+	}
+
+	/* allocate tx buf info */
+	tx_info = kzalloc(sizeof(*tx_info), GFP_ATOMIC);
+	if (!tx_info)
+		goto retry_later;
+
+	/* allocate a buffer of size len from genpool */
+	tx_info->addr = (void *)gen_pool_alloc(vrp->pool, len);
+	if (unlikely(!tx_info->addr)) {
+		dev_dbg(&vrp->vdev->dev, "out of tx bufs, vring num_free %d\n",
+				vrp->svq->num_free);
+		goto pool_empty;
+	}
+
+	tx_info->len = len;
+	mutex_unlock(&vrp->tx_lock);
+
+	return tx_info;
+
+pool_empty:
+	kfree(tx_info);
+retry_later:
+	mutex_unlock(&vrp->tx_lock);
+	return NULL;
+}
+
+/* How many bytes left in this page. */
+static inline unsigned int rest_of_page(void *data)
+{
+	return PAGE_SIZE - ((unsigned long)data % PAGE_SIZE);
+}
+
+/**
+ * rpmsg_pack_sg_list - pack a scatter gather list from a linear buffer
+ * @sg:    scatter/gather list to pack into
+ * @start: which segment of the sg_list to start at
+ * @limit: maximum segment to pack data to
+ * @data:  data to pack into scatter/gather list
+ * @count: amount of data to pack into the scatter/gather list
+ *
+ * sg_lists have multiple segments of various sizes.  This will pack
+ * arbitrary data into an existing scatter gather list, segmenting the
+ * data as necessary within constraints.
+ *
+ * Returns the number of used entries in sg list.
+ */
+static int rpmsg_pack_sg_list(struct scatterlist *sg, int start,
+			int limit, char *data, int count)
+{
+	int s;
+	int index = start;
+
+	while (count) {
+		s = rest_of_page(data);
+		if (s > count)
+			s = count;
+		BUG_ON(index > limit);
+		/* Make sure we don't terminate early. */
+		sg_unmark_end(&sg[index]);
+		sg_set_buf(&sg[index++], data, s);
+		count -= s;
+		data += s;
+	}
+	if (index-start)
+		sg_mark_end(&sg[index - 1]);
+	return index-start;
 }
 
 /**
@@ -687,9 +923,9 @@ int rpmsg_send_offchannel_raw(struct rpmsg_channel *rpdev, u32 src, u32 dst,
 {
 	struct virtproc_info *vrp = rpdev->vrp;
 	struct device *dev = &rpdev->dev;
-	struct scatterlist sg;
+	struct buf_info *tx_info;
 	struct rpmsg_hdr *msg;
-	int err;
+	int err = 0, out;
 
 	/* bcasting isn't allowed */
 	if (src == RPMSG_ADDR_ANY || dst == RPMSG_ADDR_ANY) {
@@ -698,26 +934,21 @@ int rpmsg_send_offchannel_raw(struct rpmsg_channel *rpdev, u32 src, u32 dst,
 	}
 
 	/*
-	 * We currently use fixed-sized buffers, and therefore the payload
-	 * length is limited.
-	 *
-	 * One of the possible improvements here is either to support
-	 * user-provided buffers (and then we can also support zero-copy
-	 * messaging), or to improve the buffer allocator, to support
-	 * variable-length buffer sizes.
+	 * One other possible improvements here is to support user-provided
+	 * buffers (and then we can also support zero-copy messaging).
 	 */
-	if (len > RPMSG_BUF_SIZE - sizeof(struct rpmsg_hdr)) {
+	if (len > MAX_SBUF_SIZE - sizeof(struct rpmsg_hdr)) {
 		dev_err(dev, "message is too big (%d)\n", len);
 		return -EMSGSIZE;
 	}
 
 	/* grab a buffer */
-	msg = get_a_tx_buf(vrp);
-	if (!msg && !wait)
+	tx_info = get_var_tx_buf(vrp, len + sizeof(*msg));
+	if (!tx_info && !wait)
 		return -ENOMEM;
 
 	/* no free buffer ? wait for one (but bail after 15 seconds) */
-	while (!msg) {
+	while (!tx_info) {
 		/* enable "tx-complete" interrupts, if not already enabled */
 		rpmsg_upref_sleepers(vrp);
 
@@ -728,7 +959,8 @@ int rpmsg_send_offchannel_raw(struct rpmsg_channel *rpdev, u32 src, u32 dst,
 		 * if later this happens to be required, it'd be easy to add.
 		 */
 		err = wait_event_interruptible_timeout(vrp->sendq,
-					(msg = get_a_tx_buf(vrp)),
+					(tx_info = get_var_tx_buf(vrp, len +
+								sizeof(*msg))),
 					msecs_to_jiffies(15000));
 
 		/* disable "tx-complete" interrupts if we're the last sleeper */
@@ -741,6 +973,7 @@ int rpmsg_send_offchannel_raw(struct rpmsg_channel *rpdev, u32 src, u32 dst,
 		}
 	}
 
+	msg = tx_info->addr;
 	msg->len = len;
 	msg->flags = 0;
 	msg->src = src;
@@ -754,22 +987,21 @@ int rpmsg_send_offchannel_raw(struct rpmsg_channel *rpdev, u32 src, u32 dst,
 	print_hex_dump(KERN_DEBUG, "rpmsg_virtio TX: ", DUMP_PREFIX_NONE, 16, 1,
 					msg, sizeof(*msg) + msg->len, true);
 
-	sg_init_one(&sg, msg, sizeof(*msg) + len);
+	sg_init_table(tx_info->sg, RPMSG_MAX_SG_SIZE);
 
+	out = rpmsg_pack_sg_list(tx_info->sg, 0, RPMSG_MAX_SG_SIZE,
+					(char *)msg, sizeof(*msg) + len);
 	mutex_lock(&vrp->tx_lock);
 
 	/* add message to the remote processor's virtqueue */
-	err = virtqueue_add_outbuf(vrp->svq, &sg, 1, msg, GFP_KERNEL);
+	err = virtqueue_add_outbuf(vrp->svq, tx_info->sg, out, tx_info,
+								GFP_KERNEL);
 	if (err) {
-		/*
-		 * need to reclaim the buffer here, otherwise it's lost
-		 * (memory won't leak, but rpmsg won't use it again for TX).
-		 * this will wait for a buffer management overhaul.
-		 */
+		/* need to reclaim the buffer here, otherwise it's lost */
 		dev_err(dev, "virtqueue_add_outbuf failed: %d\n", err);
+		free_tx_buf(vrp, tx_info);
 		goto out;
 	}
-
 	/* tell the remote processor it has a pending message to read */
 	virtqueue_kick(vrp->svq);
 out:
@@ -948,9 +1180,7 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	const char *names[] = { "input", "output" };
 	struct virtqueue *vqs[2];
 	struct virtproc_info *vrp;
-	void *bufs_va;
 	int err = 0, i;
-	size_t total_buf_space;
 	bool notify;
 
 	vrp = kzalloc(sizeof(*vrp), GFP_KERNEL);
@@ -982,30 +1212,24 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	else
 		vrp->num_bufs = MAX_RPMSG_NUM_BUFS;
 
-	total_buf_space = vrp->num_bufs * RPMSG_BUF_SIZE;
-
-	/* allocate coherent memory for the buffers */
-	bufs_va = dma_alloc_coherent(vdev->dev.parent->parent,
-				     total_buf_space, &vrp->bufs_dma,
-				     GFP_KERNEL);
-	if (!bufs_va) {
-		err = -ENOMEM;
+	/* allocate coherent memory for the buffers and pass it to genpool lib*/
+	err = rpmsg_create_genpool(vrp);
+	if (err) {
+		dev_err(&vdev->dev, "genpool creation failed %x\n", err);
 		goto vqs_del;
 	}
 
-	dev_dbg(&vdev->dev, "buffers: va %p, dma 0x%llx\n", bufs_va,
+	dev_dbg(&vdev->dev, "buffers: va %p, dma 0x%llx\n", vrp->bufs_va,
 					(unsigned long long)vrp->bufs_dma);
-
-	/* half of the buffers is dedicated for RX */
-	vrp->rbufs = bufs_va;
-
-	/* and half is dedicated for TX */
-	vrp->sbufs = bufs_va + total_buf_space / 2;
 
 	/* set up the receive buffers */
 	for (i = 0; i < vrp->num_bufs / 2; i++) {
 		struct scatterlist sg;
-		void *cpu_addr = vrp->rbufs + i * RPMSG_BUF_SIZE;
+		void *cpu_addr;
+
+		cpu_addr = (void *)gen_pool_alloc(vrp->pool, RPMSG_BUF_SIZE);
+		if (unlikely(!cpu_addr))
+			goto free_coherent_genpool;
 
 		sg_init_one(&sg, cpu_addr, RPMSG_BUF_SIZE);
 
@@ -1013,6 +1237,8 @@ static int rpmsg_probe(struct virtio_device *vdev)
 								GFP_KERNEL);
 		WARN_ON(err); /* sanity check; this can't really happen */
 	}
+
+	vrp->max_frees = virtqueue_get_vring_size(vrp->svq) / 4;
 
 	/* suppress "tx-complete" interrupts */
 	virtqueue_disable_cb(vrp->svq);
@@ -1027,7 +1253,7 @@ static int rpmsg_probe(struct virtio_device *vdev)
 		if (!vrp->ns_ept) {
 			dev_err(&vdev->dev, "failed to create the ns ept\n");
 			err = -ENOMEM;
-			goto free_coherent;
+			goto free_coherent_genpool;
 		}
 	}
 
@@ -1052,9 +1278,8 @@ static int rpmsg_probe(struct virtio_device *vdev)
 
 	return 0;
 
-free_coherent:
-	dma_free_coherent(vdev->dev.parent->parent, total_buf_space,
-			  bufs_va, vrp->bufs_dma);
+free_coherent_genpool:
+	rpmsg_destroy_genpool(vrp);
 vqs_del:
 	vdev->config->del_vqs(vrp->vdev);
 free_vrp:
@@ -1072,7 +1297,6 @@ static int rpmsg_remove_device(struct device *dev, void *data)
 static void rpmsg_remove(struct virtio_device *vdev)
 {
 	struct virtproc_info *vrp = vdev->priv;
-	size_t total_buf_space = vrp->num_bufs * RPMSG_BUF_SIZE;
 	int ret;
 
 	vdev->config->reset(vdev);
@@ -1088,8 +1312,7 @@ static void rpmsg_remove(struct virtio_device *vdev)
 
 	vdev->config->del_vqs(vrp->vdev);
 
-	dma_free_coherent(vdev->dev.parent->parent, total_buf_space,
-			  vrp->rbufs, vrp->bufs_dma);
+	rpmsg_destroy_genpool(vrp);
 
 	kfree(vrp);
 }

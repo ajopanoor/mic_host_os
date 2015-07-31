@@ -5,5 +5,7 @@ config RPMSG
 	tristate
 	select VIRTIO
 	select VIRTUALIZATION
+	select GENERIC_ALLOCATOR
+	select VHOST_RING
 
 endmenu
