@@ -24,6 +24,7 @@
 #include <linux/virtio.h>
 #include <linux/virtio_ids.h>
 #include <linux/virtio_config.h>
+#include <linux/vringh.h>
 #include <linux/scatterlist.h>
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
@@ -35,6 +36,16 @@
 #include <linux/mutex.h>
 #include <linux/genalloc.h>
 #include <linux/log2.h>
+
+/**
+ * struct rcv_ctx - internal vringh context
+ * @riov: kernel vring iovector
+ * @head: head index of host vring
+ */
+struct rcv_ctx {
+	struct vringh_kiov riov;
+	unsigned short head;
+};
 
 /**
  * struct virtproc_info - virtual remote processor state
@@ -75,6 +86,8 @@ struct virtproc_info {
 	struct gen_pool *pool;
 	void *bufs_va;
 	int max_frees;
+	struct vringh *vrh;
+	struct rcv_ctx vrh_ctx;
 };
 
 /*
@@ -1010,6 +1023,124 @@ out:
 }
 EXPORT_SYMBOL(rpmsg_send_offchannel_raw);
 
+static void *__rpmsg_ptov(struct virtproc_info *vrp, unsigned long addr, size_t len)
+{
+	return phys_to_virt(addr);
+}
+
+static int rpmsg_recv_single_vrh(struct virtproc_info *vrp, struct device *dev,
+						struct vringh_kiov *riov)
+{
+	struct rpmsg_endpoint *ept;
+	struct rpmsg_hdr *msg = msg;
+	void *data;
+	size_t len, dlen = 0;
+	int err = 0;
+
+	BUG_ON(riov->i == riov->used);
+	BUG_ON(riov->i != 0);
+
+	do {
+		len = riov->iov[riov->i].iov_len;
+		data = __rpmsg_ptov(vrp,
+				(unsigned long)riov->iov[riov->i].iov_base, len);
+		if(riov->i == 0) {
+			msg = data;
+			data = msg->data;
+			len -= sizeof(struct rpmsg_hdr);
+			dlen = msg->len;
+		}
+
+		dev_info(dev, "From: 0x%x, To: 0x%x, Len: %zu, Flags: %d, Reserved: %d\n",
+					msg->src, msg->dst, len,
+					msg->flags, msg->reserved);
+
+		/* use the dst addr to fetch the callback of the appropriate user */
+		mutex_lock(&vrp->endpoints_lock);
+
+		ept = idr_find(&vrp->endpoints, msg->dst);
+
+		/* let's make sure no one deallocates ept while we use it */
+		if (ept)
+			kref_get(&ept->refcount);
+
+		mutex_unlock(&vrp->endpoints_lock);
+
+		if (ept) {
+			/* make sure ept->cb doesn't go away while we use it */
+			mutex_lock(&ept->cb_lock);
+
+			if (ept->cb)
+				ept->cb(ept->rpdev, data, len, ept->priv,
+						msg->src);
+			mutex_unlock(&ept->cb_lock);
+
+			/* farewell, ept, we don't need you anymore */
+			kref_put(&ept->refcount, __ept_release);
+		} else {
+			dev_warn(dev, "%s msg received with no recipient\n",
+					__func__);
+			err++;
+		}
+		++riov->i;
+		dlen -= len;
+	} while(riov->i != riov->used);
+
+	BUG_ON(dlen != 0);
+
+	return err;
+}
+
+static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
+{
+	struct virtproc_info *vrp = vdev->priv;
+	struct device *dev = &vdev->dev;
+	struct vringh_kiov *riov = &vrp->vrh_ctx.riov;
+	unsigned int msgs_received = 0, msgs_dropped = 0;
+	int err;
+
+	do {
+		if(riov->i == riov->used) {
+			dev_info(dev, "riov.i %d riov.used %d ctx.head %d\n",
+					riov->i, riov->used, vrp->vrh_ctx.head);
+			if(vrp->vrh_ctx.head != USHRT_MAX){
+				vringh_complete_kern(vrp->vrh,
+						vrp->vrh_ctx.head,
+						0);
+				vrp->vrh_ctx.head = USHRT_MAX;
+			}
+			err = vringh_getdesc_kern(vrp->vrh, riov, NULL,
+					&vrp->vrh_ctx.head, GFP_ATOMIC);
+			if (err <= 0)
+				goto exit;
+		}
+		err = rpmsg_recv_single_vrh(vrp, dev, riov);
+		if (err){
+			msgs_dropped++;
+			continue;
+		}
+		msgs_received++;
+		if(msgs_received >= (vrp->vrh->vring.num >> 2))
+			break;
+	} while(true);
+exit:
+	switch(err) {
+		case 0:
+			dev_info(dev, "Received %u messages, dropped %u messages\n",
+						msgs_received, msgs_dropped);
+			BUG_ON(msgs_dropped > 0);
+			break;
+		case -ENOMEM:
+			dev_info(dev, "vringh_getdesc_kern failed with no mem\n");
+			break;
+		default:
+			dev_info(dev, "vringh_getdesc_kern unkown failure\n");
+			break;
+	}
+	if (msgs_received && vringh_need_notify_kern(vrp->vrh) > 0)
+		vringh_notify(vrp->vrh);
+}
+
 static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 			     struct rpmsg_hdr *msg, unsigned int len)
 {
@@ -1177,6 +1308,7 @@ static void rpmsg_ns_cb(struct rpmsg_channel *rpdev, void *data, int len,
 static int rpmsg_probe(struct virtio_device *vdev)
 {
 	vq_callback_t *vq_cbs[] = { rpmsg_recv_done, rpmsg_xmit_done };
+	vrh_callback_t *vrh_cbs[] = { rpmsg_vrh_recv_done };
 	const char *names[] = { "input", "output" };
 	struct virtqueue *vqs[2];
 	struct virtproc_info *vrp;
@@ -1194,10 +1326,17 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	mutex_init(&vrp->tx_lock);
 	init_waitqueue_head(&vrp->sendq);
 
+	/* We expect host side vrings to be discovered first */
+	err = vdev->vringh_config->find_vrhs(vdev, 1, &vrp->vrh, vrh_cbs);
+	if (err){
+		dev_err(&vdev->dev, "failed vrh creation %x\n",err);
+		goto free_vrp;
+	}
+
 	/* We expect two virtqueues, rx and tx (and in this order) */
 	err = vdev->config->find_vqs(vdev, 2, vqs, vq_cbs, names);
 	if (err)
-		goto free_vrp;
+		goto vrh_del;
 
 	vrp->rvq = vqs[0];
 	vrp->svq = vqs[1];
@@ -1256,6 +1395,9 @@ static int rpmsg_probe(struct virtio_device *vdev)
 			goto free_coherent_genpool;
 		}
 	}
+	/* Initialize the host type receive vrings */
+	vringh_kiov_init(&vrp->vrh_ctx.riov, NULL, 0);
+	vrp->vrh_ctx.head = USHRT_MAX;
 
 	/*
 	 * Prepare to kick but don't notify yet - we can't do this before
@@ -1282,6 +1424,8 @@ free_coherent_genpool:
 	rpmsg_destroy_genpool(vrp);
 vqs_del:
 	vdev->config->del_vqs(vrp->vdev);
+vrh_del:
+	vdev->vringh_config->del_vrhs(vrp->vdev);
 free_vrp:
 	kfree(vrp);
 	return err;
