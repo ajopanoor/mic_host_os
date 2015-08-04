@@ -37,7 +37,7 @@ struct mic_proc_resourcetable mproc_resourcetable
 		.gfeatures =	0,			/* negotiated features - blank */
 		.config_len =	RSC_VDEV_CONFIG_SIZE,	/* config len */
 		.status =	0,			/* status - updated by bsp */
-		.num_of_vrings=	2,			/* we have 2 rings */
+		.num_of_vrings=	3,			/* we have 2 rings */
 		.reserved =	{ 0, 0},		/* reserved */
 	},
 	.rsc_ring0 = {
@@ -70,10 +70,10 @@ static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1,  2, -1 };
 
 static bool mic_proc_virtio_notify(struct virtqueue *vq)
 {
+#if 0
 	struct rproc_vring *lvring = vq->priv;
 	struct mic_proc *mic_proc;
 	s8 db;
-#if 0
 	mic_proc = (struct mic_proc *)lvring->rvdev->rproc;
 	db = mic_proc->table_ptr->h2c_db;
 
@@ -255,10 +255,11 @@ static void mic_proc_virtio_set(struct virtio_device *vdev, unsigned offset,
 int mic_proc_alloc_vring(struct rproc_vdev *lvdev, int i)
 {
 	struct mic_proc *mic_proc = lvdev->rproc;
+	struct mic_device *mdev = mic_proc->mdev;
 	struct device *dev = mic_proc->dev;
 	struct rproc_vring *lvring = &lvdev->vring[i];
 	struct fw_rsc_vdev *rsc;
-	dma_addr_t dma;
+	dma_addr_t dma, mic_dma;
 	void *va;
 	int ret, size, notifyid;
 
@@ -275,6 +276,14 @@ int mic_proc_alloc_vring(struct rproc_vdev *lvdev, int i)
 		return -EINVAL;
 	}
 
+	mic_dma = mic_map_single(mdev, va, size);
+	if(mic_map_error(mic_dma)){
+		dev_err(dev, "%s %d mic_map_single failed %p\n", __func__,
+			       	__LINE__, va);
+		ret = -ENOMEM;
+		goto free_vring;
+	}
+
 	/*
 	 * Assign an rproc-wide unique index for this vring
 	 * TODO: assign a notifyid for rvdev updates as well
@@ -283,13 +292,13 @@ int mic_proc_alloc_vring(struct rproc_vdev *lvdev, int i)
 	ret = idr_alloc(&mic_proc->notifyids, lvring, 0, 0, GFP_KERNEL);
 	if (ret < 0) {
 		dev_err(dev, "idr_alloc failed: %d\n", ret);
-		dma_free_coherent(dev->parent, size, va, dma);
-		return ret;
+		goto unmap_dma_addr;
 	}
 	notifyid = ret;
 
-	dev_info(dev, "vring%d: va %p dma %llx size %x idr %d\n", i, va,
-				(unsigned long long)dma, size, notifyid);
+	dev_info(dev, "vring%d: va %p dma %llx mic_dma %llx size %x idr %d\n",
+			i, va, (unsigned long long)dma, (unsigned long long)mic_dma,
+			size, notifyid);
 
 	lvring->va = va;
 	lvring->dma = dma;
@@ -302,11 +311,15 @@ int mic_proc_alloc_vring(struct rproc_vdev *lvdev, int i)
 	 * hold the physical address and not the device address.
 	 */
 	rsc = (void *)mic_proc->table_ptr + lvdev->rsc_offset;
-	rsc->vring[i].da = dma;
+	rsc->vring[i].da = mic_dma;
 	rsc->vring[i].notifyid = notifyid;
 	return 0;
+unmap_dma_addr:
+	mic_unmap_single(mdev, mic_dma, size);
+free_vring:
+	dma_free_coherent(dev->parent, size, va, dma);
+	return ret;
 }
-
 
 int mic_proc_map_vring(struct rproc_vdev *lvdev, int i)
 {

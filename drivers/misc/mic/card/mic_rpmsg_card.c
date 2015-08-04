@@ -354,7 +354,7 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 	struct rproc_vdev *lvdev;
 	struct rproc_vring *lvring;
 	int ret = IRQ_NONE;
-
+#if 0
 	if(mic_proc && mic_proc->priv) {
 		lvdev = mic_proc->priv;
 		lvring = &lvdev->vring[notifyid];
@@ -383,6 +383,7 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 	} else
 		printk(KERN_INFO "%s: Failed interrupt! mic_proc %p priv %p\n",
 					       __func__, mic_proc, mic_proc->priv);
+#endif
 	return ret;
 }
 
