@@ -8,4 +8,5 @@ config RPMSG
 	select GENERIC_ALLOCATOR
 	select VHOST_RING
 
+source "drivers/rpmsg/test/Kconfig"
 endmenu
