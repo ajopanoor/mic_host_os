@@ -36,6 +36,7 @@
 #include <linux/mutex.h>
 #include <linux/genalloc.h>
 #include <linux/log2.h>
+#include "../misc/mic/host/mic_device.h"
 
 /**
  * struct rcv_ctx - internal vringh context
@@ -299,6 +300,8 @@ static struct rpmsg_endpoint *__rpmsg_create_ept(struct virtproc_info *vrp,
 	ept->addr = id;
 
 	mutex_unlock(&vrp->endpoints_lock);
+
+	dev_info(dev, "%s ept %p rpdev %p cb %ps addr %d\n",__func__, ept, rpdev, cb, id);
 
 	return ept;
 
@@ -624,8 +627,9 @@ static int rpmsg_destroy_channel(struct virtproc_info *vrp,
  */
 static void rpmsg_destroy_genpool(struct virtproc_info *vrp)
 {
+	struct device *dev = vrp->vdev->dev.parent->parent;
 	BUG_ON(!vrp->pool);
-	dma_free_coherent(vrp->vdev->dev.parent->parent, vrp->pool_size,
+	dma_free_coherent(dev, vrp->pool_size,
 			vrp->bufs_va, vrp->bufs_dma);
 	gen_pool_destroy(vrp->pool);
 	vrp->pool = NULL;
@@ -660,6 +664,7 @@ static void rpmsg_destroy_genpool(struct virtproc_info *vrp)
 static int rpmsg_create_genpool(struct virtproc_info *vrp)
 {
 	int ret = -ENOMEM;
+	struct device *dev = vrp->vdev->dev.parent->parent;
 
 	/*
 	 * gen_pool_create mandates user of the pool to provide the a minimum
@@ -681,8 +686,8 @@ static int rpmsg_create_genpool(struct virtproc_info *vrp)
 			 ((vrp->num_bufs / 2) * RPMSG_BUF_SIZE);
 
 	/* Allocate the chunk of memory which will passed to genpool later */
-	vrp->bufs_va = dma_alloc_coherent(vrp->vdev->dev.parent->parent,
-				vrp->pool_size, &vrp->bufs_dma, GFP_KERNEL);
+	vrp->bufs_va = dma_alloc_coherent(dev, vrp->pool_size, &vrp->bufs_dma,
+								GFP_KERNEL);
 	if (!vrp->bufs_va) {
 		dev_err(&vrp->vdev->dev, "failed to alloc buf pool %p\n",
 								vrp->bufs_va);
@@ -698,8 +703,7 @@ static int rpmsg_create_genpool(struct virtproc_info *vrp)
 	return 0;
 
 free_coherent:
-	dma_free_coherent(vrp->vdev->dev.parent->parent, vrp->pool_size,
-			vrp->bufs_va, vrp->bufs_dma);
+	dma_free_coherent(dev, vrp->pool_size, vrp->bufs_va, vrp->bufs_dma);
 destroy_pool:
 	gen_pool_destroy(vrp->pool);
 
@@ -1025,7 +1029,14 @@ EXPORT_SYMBOL(rpmsg_send_offchannel_raw);
 
 static void *__rpmsg_ptov(struct virtproc_info *vrp, unsigned long addr, size_t len)
 {
-	return phys_to_virt(addr);
+	struct mic_device *mdev = dev_get_drvdata(&vrp->vdev->dev);
+	void *va;
+
+	va = (void __force *)mdev->aper.va + le64_to_cpu(addr);
+
+	dev_info(&vrp->vdev->dev, "mdev %p va %p\n", mdev, va);
+
+	return va;
 }
 
 static int rpmsg_recv_single_vrh(struct virtproc_info *vrp, struct device *dev,
@@ -1054,6 +1065,9 @@ static int rpmsg_recv_single_vrh(struct virtproc_info *vrp, struct device *dev,
 		dev_info(dev, "From: 0x%x, To: 0x%x, Len: %zu, Flags: %d, Reserved: %d\n",
 					msg->src, msg->dst, len,
 					msg->flags, msg->reserved);
+
+		print_hex_dump(KERN_INFO, "rpmsg_virtio RX: ", DUMP_PREFIX_NONE, 16, 1,
+					msg, sizeof(*msg) + msg->len, true);
 
 		/* use the dst addr to fetch the callback of the appropriate user */
 		mutex_lock(&vrp->endpoints_lock);
@@ -1128,7 +1142,7 @@ exit:
 		case 0:
 			dev_info(dev, "Received %u messages, dropped %u messages\n",
 						msgs_received, msgs_dropped);
-			BUG_ON(msgs_dropped > 0);
+			//BUG_ON(msgs_dropped > 0);
 			break;
 		case -ENOMEM:
 			dev_info(dev, "vringh_getdesc_kern failed with no mem\n");
@@ -1263,7 +1277,7 @@ static void rpmsg_ns_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	struct device *dev = &vrp->vdev->dev;
 	int ret;
 
-	print_hex_dump(KERN_DEBUG, "NS announcement: ",
+	print_hex_dump(KERN_INFO, "NS announcement: ",
 			DUMP_PREFIX_NONE, 16, 1,
 			data, len, true);
 

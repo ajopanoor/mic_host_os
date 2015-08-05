@@ -70,7 +70,6 @@ static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1,  2, -1 };
 
 static bool mic_proc_virtio_notify(struct virtqueue *vq)
 {
-#if 0
 	struct rproc_vring *lvring = vq->priv;
 	struct mic_proc *mic_proc;
 	s8 db;
@@ -78,13 +77,11 @@ static bool mic_proc_virtio_notify(struct virtqueue *vq)
 	db = mic_proc->table_ptr->h2c_db;
 
 	mic_proc->mdev->ops->send_intr(mic_proc->mdev, db);
-#endif
 	return true;
 }
 
 static void mic_proc_virtio_vringh_notify(struct vringh *vrh)
 {
-#if 0
 	struct rproc_vring *lvring = vringh_to_rvring(vrh);
 	struct mic_proc *mic_proc;
 	s8 db;
@@ -93,9 +90,7 @@ static void mic_proc_virtio_vringh_notify(struct vringh *vrh)
 	db = mic_proc->table_ptr->h2c_db;
 
 	mic_proc->mdev->ops->send_intr(mic_proc->mdev, db);
-#endif
 }
-
 
 static void mic_proc_virtio_del_vqs(struct virtio_device *vdev)
 {
@@ -148,8 +143,8 @@ static u64 mic_proc_virtio_get_features(struct virtio_device *vdev)
 
 	rsc = (void *)mic_proc->table_ptr + lvdev->rsc_offset;
 
-	dev_dbg(&vdev->dev,"%s: gfeatures %x\n", __func__,rsc->gfeatures);
-	return rsc->gfeatures;
+	dev_dbg(&vdev->dev,"%s: dfeatures %x\n", __func__,rsc->dfeatures);
+	return rsc->dfeatures;
 }
 
 static int mic_proc_virtio_finalize_features(struct virtio_device *vdev)
@@ -175,12 +170,11 @@ static struct vringh *mic_proc_create_new_vringh(struct rproc_vring *lvring,
 	struct rproc_vringh *lvrh = NULL;
 	struct rproc_vdev *lvdev = lvring->rvdev;
 	struct virtio_device *vdev = &lvdev->vdev;
-	int err;
+	int err = -ENOMEM;
 
 	lvrh = kzalloc(sizeof(*lvrh), GFP_KERNEL);
-	err = -ENOMEM;
 	if (!lvrh)
-		goto err;
+		return err;
 
 	/* initialize the host virtio ring */
 	lvrh->vringh_cb = callback;
@@ -431,9 +425,6 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 		lvring = &lvdev->vring[notifyid];
 		switch (notifyid) {
 			case 0:
-				ret = vring_interrupt(1, lvring->vq);
-				break;
-			case 1:
 				if (lvring->rvringh && lvring->rvringh->vringh_cb){
 					lvring->rvringh->vringh_cb(&lvring->rvdev->vdev,
 							&lvring->rvringh->vrh); 
@@ -444,6 +435,15 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 								notifyid);
 					ret = IRQ_NONE;
 				}
+				break;
+			case 1:
+			case 2:
+				if(lvring && lvring->vq)
+					ret = vring_interrupt(1, lvring->vq);
+				else
+					printk(KERN_INFO "%s: Failed interrupt!"
+						"lvring %p notifyid %d",
+					       	__func__, lvring, notifyid);
 				break;
 			default:
 				printk(KERN_INFO "%s: Failed interrupt!"
@@ -623,6 +623,7 @@ int mic_proc_add_virtio_dev(struct mic_proc *mic_proc, struct rproc_vdev *lvdev,
 	vdev->vringh_config = &mic_proc_virtio_vringh_ops;
 	vdev->dev.parent = dev;
 	vdev->dev.release = mic_proc_vdev_release;
+	dev_set_drvdata(&vdev->dev, mic_proc->mdev);
 
 	ret = register_virtio_device(vdev);
 	if (ret) {
