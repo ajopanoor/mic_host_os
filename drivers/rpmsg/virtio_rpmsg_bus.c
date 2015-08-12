@@ -37,7 +37,7 @@
 #include <linux/genalloc.h>
 #include <linux/log2.h>
 #include "../misc/mic/host/mic_device.h"
-
+#include "../misc/mic/host/mic_smpt.h"
 /**
  * struct rcv_ctx - internal vringh context
  * @riov: kernel vring iovector
@@ -1323,8 +1323,10 @@ static int rpmsg_probe(struct virtio_device *vdev)
 {
 	vq_callback_t *vq_cbs[] = { rpmsg_recv_done, rpmsg_xmit_done };
 	vrh_callback_t *vrh_cbs[] = { rpmsg_vrh_recv_done };
+	struct mic_device *mdev = dev_get_drvdata(&vdev->dev);
 	const char *names[] = { "input", "output" };
 	struct virtqueue *vqs[2];
+	dma_addr_t mic_dma;
 	struct virtproc_info *vrp;
 	int err = 0, i;
 	bool notify;
@@ -1372,8 +1374,16 @@ static int rpmsg_probe(struct virtio_device *vdev)
 		goto vqs_del;
 	}
 
-	dev_dbg(&vdev->dev, "buffers: va %p, dma 0x%llx\n", vrp->bufs_va,
-					(unsigned long long)vrp->bufs_dma);
+	mic_dma = mic_map_single(mdev, vrp->bufs_va, vrp->pool_size);
+	if(mic_map_error(mic_dma)){
+		dev_err(&vdev->dev, "%s %d mic_map_single failed %p\n", __func__,
+			       	__LINE__, vrp->bufs_va);
+		goto free_coherent_genpool;
+	}
+
+	dev_info(&vdev->dev, "buf pool va %p, dma 0x%llx size %d num_bufs %d\n",
+				vrp->bufs_va, (unsigned long long)mic_dma,
+				vrp->pool_size, vrp->num_bufs);
 
 	/* set up the receive buffers */
 	for (i = 0; i < vrp->num_bufs / 2; i++) {
@@ -1382,7 +1392,7 @@ static int rpmsg_probe(struct virtio_device *vdev)
 
 		cpu_addr = (void *)gen_pool_alloc(vrp->pool, RPMSG_BUF_SIZE);
 		if (unlikely(!cpu_addr))
-			goto free_coherent_genpool;
+			goto unmap_dma_addr;
 
 		sg_init_one(&sg, cpu_addr, RPMSG_BUF_SIZE);
 
@@ -1434,6 +1444,8 @@ static int rpmsg_probe(struct virtio_device *vdev)
 
 	return 0;
 
+unmap_dma_addr:
+	mic_unmap_single(mdev, mic_dma, vrp->pool_size);
 free_coherent_genpool:
 	rpmsg_destroy_genpool(vrp);
 vqs_del:

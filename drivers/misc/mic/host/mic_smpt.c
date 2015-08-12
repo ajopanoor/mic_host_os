@@ -324,7 +324,7 @@ dma_addr_t mic_map_single(struct mic_device *mdev, void *va, size_t size)
 	}
 	return mic_addr;
 }
-
+EXPORT_SYMBOL(mic_map_single);
 /**
  * mic_unmap_single - Unmaps a MIC physical address.
  *
@@ -345,7 +345,7 @@ mic_unmap_single(struct mic_device *mdev, dma_addr_t mic_addr, size_t size)
 	mic_unmap(mdev, mic_addr, size);
 	pci_unmap_single(pdev, dma_addr, size, PCI_DMA_BIDIRECTIONAL);
 }
-
+EXPORT_SYMBOL(mic_unmap_single);
 /**
  * mic_smpt_init - Initialize MIC System Memory Page Tables.
  *

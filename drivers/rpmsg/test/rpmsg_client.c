@@ -365,6 +365,7 @@ static void rpmsg_client_remove(struct rpmsg_channel *rpdev)
 
 static struct rpmsg_device_id rpmsg_client_driver_id_table[] = {
 	{ .name	= "lproc" },
+	{ .name	= "mic_proc" },
 	{ },
 };
 MODULE_DEVICE_TABLE(rpmsg, rpmsg_client_driver_id_table);
