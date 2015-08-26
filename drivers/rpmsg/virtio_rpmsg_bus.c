@@ -1049,7 +1049,7 @@ static void *__rpmsg_mic_aper_va(struct virtproc_info *vrp, unsigned long addr, 
 
 	va = (void __force *)mdev->aper.va + le64_to_cpu(addr);
 
-	dev_info(&vrp->vdev->dev, "mdev %p va %p\n", mdev, va);
+	dev_dbg(&vrp->vdev->dev, "mdev %p va %p\n", mdev, va);
 
 	return va;
 }
@@ -1110,11 +1110,6 @@ int rpmsg_map_fixed_buf_pool(struct virtproc_info *vrp, size_t total_buf_space)
 		vdev->config->get(vdev, offset, (void *)&desc,
 				 sizeof(struct fw_rsc_vdev_buf_desc));
 	}
-
-	dev_info(&vrp->vdev->dev, "%s: bsp %d desc.addr %p"
-				" len %u (%zu)\n",__func__, is_bsp,
-				(void *)desc.addr, desc.len, total_buf_space);
-
 	if(unlikely(!desc.addr || !desc.len))
 		return -1U;
 
@@ -1129,8 +1124,8 @@ int rpmsg_map_fixed_buf_pool(struct virtproc_info *vrp, size_t total_buf_space)
 		return -1U;
 	}
 
-	dev_info(&vrp->vdev->dev, "%s: ioremap_cache sucess! phy %p virt %p"
-			" len %u\n",__func__, (void *)desc.addr, bufs_va,
+	dev_info(&vrp->vdev->dev, "%s: ioremap_cache phy %p virt %p"
+			" len %u done\n",__func__, (void *)desc.addr, bufs_va,
 			desc.len);
 
 	__rpmsg_update_pool_info(&vrp->rp_info, bufs_va, desc.addr, desc.len);
@@ -1185,7 +1180,7 @@ static int rpmsg_recv_single_vrh(struct virtproc_info *vrp, struct device *dev,
 			dlen = msg->len;
 		}
 
-		dev_info(dev, "From: 0x%x, To: 0x%x, Len: %zu, Flags: %d, Reserved: %d\n",
+		dev_dbg(dev, "From: 0x%x, To: 0x%x, Len: %zu, Flags: %d, Reserved: %d\n",
 					msg->src, msg->dst, len,
 					msg->flags, msg->reserved);
 #if 0
@@ -1263,7 +1258,7 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 exit:
 	switch(err) {
 		case 0:
-			dev_info(dev, "Received %u messages, dropped %u messages\n",
+			dev_dbg(dev, "Received %u messages, dropped %u messages\n",
 						msgs_received, msgs_dropped);
 			//BUG_ON(msgs_dropped > 0);
 			break;
@@ -1507,7 +1502,7 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	dev_info(&vdev->dev, "buf pool va %p, dma 0x%llx size %zu num_bufs %d\n",
 				vrp->bufs_va, (unsigned long long)vrp->mic_dma,
 				vrp->pool_size, vrp->num_bufs);
-
+#ifdef VRING_RECV
 	/* set up the receive buffers */
 	for (i = 0; i < vrp->num_bufs / 2; i++) {
 		struct scatterlist sg;
@@ -1523,7 +1518,7 @@ static int rpmsg_probe(struct virtio_device *vdev)
 								GFP_KERNEL);
 		WARN_ON(err); /* sanity check; this can't really happen */
 	}
-
+#endif
 	vrp->max_frees = virtqueue_get_vring_size(vrp->svq) / 4;
 
 	/* suppress "tx-complete" interrupts */

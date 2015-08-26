@@ -437,6 +437,7 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 				}
 				break;
 			case 1:
+				break; // FIXME: remove if recv != vrh
 			case 2:
 				if(lvring && lvring->vq)
 					ret = vring_interrupt(1, lvring->vq);
@@ -462,9 +463,7 @@ static irqreturn_t mic_proc_callback(int irq, void *data)
 	struct mic_proc *mic_proc = data;
 	int i;
 
-	printk(KERN_INFO "%s mic_proc %p\n",__func__, mic_proc);
 	if (unlikely(!mic_proc)) {
-		printk(KERN_DEBUG "In %s %p\n",__func__, mic_proc);
 		return IRQ_HANDLED;
 	}
 
