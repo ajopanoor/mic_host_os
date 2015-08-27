@@ -99,3 +99,9 @@ config MIC_RPMSG
 	select VHOST_RING
 	default y
 
+comment "Workqueue for RPMSG"
+
+config MIC_RPMSG_WQ
+	bool "Enable bottom half processing for MIC_RPMSG"
+	depends on 64BIT && X86 && INTEL_MIC_BUS && MIC_RPMSG
+	default n

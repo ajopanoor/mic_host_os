@@ -42,6 +42,7 @@
 #include <linux/vringh.h>
 #include <linux/completion.h>
 #include <linux/idr.h>
+#include <linux/workqueue.h>
 
 struct resource_table {
 	u32 ver;
@@ -183,6 +184,9 @@ struct mic_proc {
 	void *priv;
 	int db;
 	struct mic_irq *db_cookie;
+#ifdef CONFIG_MIC_RPMSG_WQ
+	struct work_struct vq_work;
+#endif
 };
 
 static inline struct rproc_vdev *vdev_to_rvdev(struct virtio_device *vdev)

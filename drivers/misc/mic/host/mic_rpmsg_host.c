@@ -68,6 +68,24 @@ struct mic_proc_resourcetable *lrsc = &mproc_resourcetable;
 static int vrh_id_map[RVDEV_NUM_VRINGS] = { 0, -1, -1 };
 static int vrg_id_map[RVDEV_NUM_VRINGS] = { 1,  2, -1 };
 
+#ifdef CONFIG_MIC_RPMSG_WQ
+struct workqueue_struct *mic_rpmsg_wq;
+
+static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *,int);
+static void mic_proc_rpmsg_work(struct work_struct *work)
+{
+	struct mic_proc *mic_proc =
+		container_of(work, struct mic_proc, vq_work);
+	int i;
+
+	for (i=0; i <= mic_proc->max_notifyid; i++) {
+		if(mic_proc_vq_interrupt(mic_proc,i) == IRQ_NONE) {
+			printk(KERN_DEBUG "%s No work to do vq %d\n",__func__,i);
+		}
+	}
+}
+#endif
+
 static bool mic_proc_virtio_notify(struct virtqueue *vq)
 {
 	struct rproc_vring *lvring = vq->priv;
@@ -467,11 +485,15 @@ static irqreturn_t mic_proc_callback(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
+#ifdef CONFIG_MIC_RPMSG_WQ
+	queue_work(mic_rpmsg_wq, &mic_proc->vq_work);
+#else
 	for (i=0; i <= mic_proc->max_notifyid; i++) {
 		if(mic_proc_vq_interrupt(mic_proc,i) == IRQ_NONE) {
 			printk(KERN_DEBUG "%s No work to do vq %d\n",__func__,i);
 		}
 	}
+#endif
 	return IRQ_HANDLED;
 }
 
@@ -859,7 +881,12 @@ int mic_proc_init(struct mic_device *mdev)
 		dev_err(mdev->sdev->parent,"%s: kzalloc failed\n", __func__);
 		return ret;
 	}
-
+#ifdef CONFIG_MIC_RPMSG_WQ
+	mic_rpmsg_wq = alloc_workqueue("mic-rpmsg-wq", 0, 0);
+	if (!mic_rpmsg_wq)
+		goto err;
+	INIT_WORK(&mic_proc->vq_work, mic_proc_rpmsg_work);
+#endif
 	INIT_LIST_HEAD(&mic_proc->lvdevs);
 
 	mic_proc->dev = mdev->sdev->parent;
@@ -872,6 +899,9 @@ int mic_proc_init(struct mic_device *mdev)
 	}
 	return 0;
 err:
+#ifdef CONFIG_MIC_RPMSG_WQ
+	destroy_workqueue(mic_rpmsg_wq);
+#endif
 	kfree(mic_proc);
 	return ret;
 }
@@ -883,6 +913,9 @@ void mic_proc_uninit(struct mic_device *mdev)
 	mic_proc = mdev->mic_proc;
 	mic_unmap_single(mdev, mic_proc->table_dma_addr, PAGE_SIZE);
 	mic_free_irq(mdev, mic_proc->db_cookie, mic_proc);
+#ifdef CONFIG_MIC_RPMSG_WQ
+	destroy_workqueue(mic_rpmsg_wq);
+#endif
 	kfree(mic_proc->table_ptr);
 	kfree(mic_proc);
 }
