@@ -759,6 +759,8 @@ static void release_tx_bufs(struct virtproc_info *vrp)
 		free_tx_buf(vrp, tx_info);
 		count++;
 	}
+	dev_info(&vrp->vdev->dev, "%s tx done num_free %d count %lu\n",__func__,
+			vrp->svq->num_free, count);
 }
 
 /**
@@ -1012,7 +1014,7 @@ int rpmsg_send_offchannel_raw(struct rpmsg_channel *rpdev, u32 src, u32 dst,
 	msg->reserved = 0;
 	memcpy(msg->data, data, len);
 
-	dev_dbg(dev, "TX From 0x%x, To 0x%x, Len %d, Flags %d, Reserved %d\n",
+	dev_info(dev, "TX From 0x%x, To 0x%x, Len %d, Flags %d, Reserved %d\n",
 					msg->src, msg->dst, msg->len,
 					msg->flags, msg->reserved);
 #if 0
@@ -1252,8 +1254,10 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 			continue;
 		}
 		msgs_received++;
+#if 0
 		if(msgs_received >= (vrp->vrh->vring.num >> 2))
 			break;
+#endif
 	} while(true);
 exit:
 	switch(err) {
@@ -1280,7 +1284,7 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 	struct scatterlist sg;
 	int err;
 
-	dev_dbg(dev, "From: 0x%x, To: 0x%x, Len: %d, Flags: %d, Reserved: %d\n",
+	dev_info(dev, "From: 0x%x, To: 0x%x, Len: %d, Flags: %d, Reserved: %d\n",
 					msg->src, msg->dst, msg->len,
 					msg->flags, msg->reserved);
 #if 0
@@ -1379,7 +1383,7 @@ static void rpmsg_xmit_done(struct virtqueue *svq)
 {
 	struct virtproc_info *vrp = svq->vdev->priv;
 
-	dev_dbg(&svq->vdev->dev, "%s\n", __func__);
+	dev_info(&svq->vdev->dev, "%s\n", __func__);
 
 	/* wake up potential senders that are waiting for a tx buffer */
 	wake_up_interruptible(&vrp->sendq);
@@ -1522,7 +1526,7 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	vrp->max_frees = virtqueue_get_vring_size(vrp->svq) / 4;
 
 	/* suppress "tx-complete" interrupts */
-	virtqueue_disable_cb(vrp->svq);
+	//virtqueue_disable_cb(vrp->svq);
 
 	vdev->priv = vrp;
 

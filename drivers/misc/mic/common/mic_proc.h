@@ -213,5 +213,5 @@ void mic_proc_uninit(struct mic_device *mdev);
 #else
 int mic_proc_init(struct mic_driver *mdrv);
 #endif
-
+void mic_proc_reset(struct mic_device *mdev);
 #endif /* MIC_PROC_H */

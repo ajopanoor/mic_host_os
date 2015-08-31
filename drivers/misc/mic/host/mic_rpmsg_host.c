@@ -78,8 +78,9 @@ static void mic_proc_rpmsg_work(struct work_struct *work)
 		container_of(work, struct mic_proc, vq_work);
 	int i;
 
-	for (i=0; i <= mic_proc->max_notifyid; i++) {
-		if(mic_proc_vq_interrupt(mic_proc,i) == IRQ_NONE) {
+	dev_info(mic_proc->dev, "%s: bottom half\n", __func__);
+	for (i = 0; i <= mic_proc->max_notifyid; i++) {
+		if(mic_proc_vq_interrupt(mic_proc, i) == IRQ_NONE) {
 			printk(KERN_DEBUG "%s No work to do vq %d\n",__func__,i);
 		}
 	}
@@ -94,6 +95,7 @@ static bool mic_proc_virtio_notify(struct virtqueue *vq)
 	mic_proc = (struct mic_proc *)lvring->rvdev->rproc;
 	db = mic_proc->table_ptr->h2c_db;
 
+	dev_info(mic_proc->dev, "%s %s\n", __func__, vq->name);
 	mic_proc->mdev->ops->send_intr(mic_proc->mdev, db);
 	return true;
 }
@@ -107,12 +109,50 @@ static void mic_proc_virtio_vringh_notify(struct vringh *vrh)
 	mic_proc = (struct mic_proc *)lvring->rvdev->rproc;
 	db = mic_proc->table_ptr->h2c_db;
 
+	dev_info(mic_proc->dev, "%s %s\n", __func__, "vrh");
 	mic_proc->mdev->ops->send_intr(mic_proc->mdev, db);
+}
+
+static void mic_proc_free_vring(struct rproc_vring *lvring)
+{
+	int size = PAGE_ALIGN(vring_size(lvring->len, lvring->align));
+	struct rproc_vdev *lvdev = lvring->rvdev;
+	struct mic_proc *mic_proc = (struct mic_proc *)lvdev->rproc;
+	struct mic_device *mdev = mic_proc->mdev;
+	int idx = lvring->rvdev->vring - lvring;
+	struct device *dev = mic_proc->dev;
+	struct fw_rsc_vdev *rsc;
+
+	/* reset resource entry info */
+	rsc = (void *)mic_proc->table_ptr + lvdev->rsc_offset;
+
+	dev_info(dev, "%s vring%d va %p dma %llx mic_dma %llx size %x idr %d\n",
+			__func__, idx, lvring->va,
+			(unsigned long long)lvring->dma,
+			(unsigned long long)rsc->vring[idx].da,
+			size, lvring->notifyid);
+
+	mic_unmap_single(mdev, rsc->vring[idx].da, size);
+
+	rsc->vring[idx].da = 0;
+	rsc->vring[idx].notifyid = -1;
+
+	idr_remove(&mic_proc->notifyids, lvring->notifyid);
+	dma_free_coherent(dev->parent, size, lvring->va, lvring->dma);
 }
 
 static void mic_proc_virtio_del_vqs(struct virtio_device *vdev)
 {
-	printk(KERN_INFO "%s: Not implemented\n", __func__);
+	struct virtqueue *vq, *n;
+	struct rproc_vring *lvring;
+
+	dev_info(&vdev->dev,"%s started..\n", __func__);
+	list_for_each_entry_safe(vq, n, &vdev->vqs, list) {
+		lvring = vq->priv;
+		lvring->vq = NULL;
+		vring_del_virtqueue(vq);
+		mic_proc_free_vring(lvring);
+	}
 }
 
 static u8 mic_proc_virtio_get_status(struct virtio_device *vdev)
@@ -192,7 +232,7 @@ static struct vringh *mic_proc_create_new_vringh(struct rproc_vring *lvring,
 
 	lvrh = kzalloc(sizeof(*lvrh), GFP_KERNEL);
 	if (!lvrh)
-		return err;
+		return ERR_PTR(-ENOMEM);
 
 	/* initialize the host virtio ring */
 	lvrh->vringh_cb = callback;
@@ -333,38 +373,6 @@ free_vring:
 	return ret;
 }
 
-int mic_proc_map_vring(struct rproc_vdev *lvdev, int i)
-{
-	struct mic_proc *mic_proc = (struct mic_proc *)lvdev->rproc;
-	struct device *dev = mic_proc->dev;
-	struct rproc_vring *lvring = &lvdev->vring[i];
-	struct fw_rsc_vdev *rsc;
-	dma_addr_t dma;
-	void *va;
-	int size, notifyid;
-
-	rsc = (void *)mic_proc->table_ptr + lvdev->rsc_offset;
-	dma = rsc->vring[i].da;
-	notifyid = rsc->vring[i].notifyid;
-
-	/* actual size of vring (in bytes) */
-	size = PAGE_ALIGN(vring_size(lvring->len, lvring->align));
-
-	va = ioremap_cache(dma, size);
-	if (!va) {
-		dev_err(dev, "ioremap failed\n");
-		return -EINVAL;
-	}
-
-	dev_info(dev, "vring%d: va %p dma %llx size %d idr %d\n", i, va,
-				(unsigned long long)dma, size, notifyid);
-
-	lvring->va = va;
-	lvring->dma = dma;
-	lvring->notifyid = notifyid;
-	return 0;
-}
-
 static struct virtqueue *lp_find_vq(struct virtio_device *vdev,
 				    unsigned id,
 				    void (*callback)(struct virtqueue *vq),
@@ -390,7 +398,6 @@ static struct virtqueue *lp_find_vq(struct virtio_device *vdev,
 	BUG_ON(lvring->vq != NULL);
 	BUG_ON(lvring->rvringh != NULL);
 
-
 	if (i == ARRAY_SIZE(lvdev->vring))
 		return ERR_PTR(-EINVAL);
 
@@ -413,12 +420,7 @@ static struct virtqueue *lp_find_vq(struct virtio_device *vdev,
 					mic_proc_virtio_notify, callback, name);
 	if (!vq) {
 		dev_err(dev, "vring_new_virtqueue %s failed\n", name);
-#if 0
-		/*
-		 *TODO: Implement the cleanup features.
-		 */
 		mic_proc_free_vring(lvring);
-#endif
 		return ERR_PTR(-ENOMEM);
 	}
 
@@ -479,18 +481,21 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 static irqreturn_t mic_proc_callback(int irq, void *data)
 {
 	struct mic_proc *mic_proc = data;
-	int i;
+	struct device *dev;
+	int i = 0;
 
 	if (unlikely(!mic_proc)) {
 		return IRQ_HANDLED;
 	}
-
+	dev = mic_proc->dev;
 #ifdef CONFIG_MIC_RPMSG_WQ
+	dev_info(dev, "%s vq work queued\n",__func__);
 	queue_work(mic_rpmsg_wq, &mic_proc->vq_work);
 #else
-	for (i=0; i <= mic_proc->max_notifyid; i++) {
-		if(mic_proc_vq_interrupt(mic_proc,i) == IRQ_NONE) {
-			printk(KERN_DEBUG "%s No work to do vq %d\n",__func__,i);
+	for (i = 0; i <= mic_proc->max_notifyid; i++) {
+		if(mic_proc_vq_interrupt(mic_proc, i) == IRQ_NONE) {
+			dev_info(dev, "%s No work to do on vq %d\n",
+					__func__, i);
 		}
 	}
 #endif
@@ -528,7 +533,15 @@ static struct virtio_config_ops mic_proc_virtio_config_ops = {
 
 static void mic_proc_vdev_release(struct device *dev)
 {
-	printk(KERN_INFO "%s: Not implemented yet\n", __func__);
+	struct virtio_device *vdev = dev_to_virtio(dev);
+	struct rproc_vdev *lvdev = vdev_to_rvdev(vdev);
+	struct mic_proc *mic_proc = (struct mic_proc *)lvdev->rproc;
+
+	dev_info(dev,"%s virtio-%d\n", __func__, vdev->id.device);
+
+	list_del(&lvdev->node);
+	kfree(lvdev);
+
 }
 
 void mic_proc_remove_virtio_dev(struct rproc_vdev *lvdev)
@@ -580,7 +593,7 @@ static struct vringh *lp_find_vrh(struct virtio_device *vdev,
 	 */
 	vrh = mic_proc_create_new_vringh(lvring, i, callback);
 	if (!vrh) {
-		//mic_proc_free_vring(lvring);
+		mic_proc_free_vring(lvring);
 		return ERR_PTR(-ENOMEM);
 	}
 
@@ -596,15 +609,15 @@ static void __mic_proc_virtio_del_vrhs(struct virtio_device *vdev)
 		struct rproc_vring *lvring = &lvdev->vring[i];
 		if (!lvring->rvringh)
 			continue;
+		dev_info(&vdev->dev,"%s vring[%d]\n", __func__, i);
 		kfree(lvring->rvringh);
 		lvring->rvringh = NULL;
-		//mic_proc_free_vring(lvring);
+		mic_proc_free_vring(lvring);
 	}
 }
 
 static void mic_proc_virtio_del_vrhs(struct virtio_device *vdev)
 {
-	printk(KERN_INFO "%s: Not implemented completely\n", __func__);
 	__mic_proc_virtio_del_vrhs(vdev);
 }
 
@@ -904,6 +917,13 @@ err:
 #endif
 	kfree(mic_proc);
 	return ret;
+}
+
+void mic_proc_reset(struct mic_device *mdev)
+{
+	struct mic_proc *mic_proc;
+
+	mic_proc = mdev->mic_proc;
 }
 
 void mic_proc_uninit(struct mic_device *mdev)

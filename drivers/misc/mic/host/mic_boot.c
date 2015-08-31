@@ -450,6 +450,7 @@ void mic_stop(struct mic_device *mdev, bool force)
 	if (MIC_OFFLINE != mdev->state || force) {
 		scif_unregister_device(mdev->scdev);
 		mic_virtio_reset_devices(mdev);
+		mic_proc_reset(mdev);
 		mic_free_dma_chans(mdev);
 		mbus_unregister_device(mdev->dma_mbdev);
 		mic_bootparam_init(mdev);

@@ -32,14 +32,18 @@ static void print_usage(void)
 #define TEST_INPUT_OPTS		"c:t:n:s:r:e:w:h"
 void __random(int *buf, int len)
 {
-	unsigned int seed, i, val, times = len / sizeof(int);
+
+	static unsigned int val;
+	unsigned int seed, i, times = len / sizeof(int);
+#if 0
 	FILE* urandom = fopen("/dev/urandom", "r");
 	fread(&seed, sizeof(int), 1, urandom);
 	fclose(urandom);
 	srand(seed);
-
+#endif
 	for(i=0; i < times; i++)
-		buf[i] = rand();
+		buf[i] = val;//rand();
+	val++;
 }
 
 static void dump_args(struct rpmsg_test_args *targs)

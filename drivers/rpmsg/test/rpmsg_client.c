@@ -140,6 +140,8 @@ rpmsg_write(struct file *f, const char __user *buf, size_t count, loff_t *ppos)
 	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
 	int ret;
 
+	dev_info(&rpdev->dev,"%s user tx buf[%3d]\n",__func__,
+						((int __user *)buf)[0]);
 	if (f->f_flags & O_NONBLOCK)
 		ret = rpmsg_trysend(rpdev, (void *)buf, (int)count);
 	else
@@ -167,7 +169,8 @@ void rpmsg_client_cb(struct rpmsg_channel *rpdev, void *data, int len,
 {
 	struct rpmsg_recv_blk *rblk;
 
-	dev_info(&rpdev->dev, "%s: %d bytes from 0x%x",__func__, len, src);
+	dev_info(&rpdev->dev, "%s: %d bytes from 0x%x [%4d]",__func__, len,
+						src, ((int *)data)[0]);
 
 	rblk = kmalloc(sizeof(*rblk), GFP_ATOMIC);
 	if (!rblk) {
