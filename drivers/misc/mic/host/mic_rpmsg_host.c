@@ -119,10 +119,11 @@ static void mic_proc_free_vring(struct rproc_vring *lvring)
 	struct rproc_vdev *lvdev = lvring->rvdev;
 	struct mic_proc *mic_proc = (struct mic_proc *)lvdev->rproc;
 	struct mic_device *mdev = mic_proc->mdev;
-	int idx = lvring->rvdev->vring - lvring;
+	int idx = lvring - lvring->rvdev->vring;
 	struct device *dev = mic_proc->dev;
 	struct fw_rsc_vdev *rsc;
 
+	BUG_ON(idx < 0);
 	/* reset resource entry info */
 	rsc = (void *)mic_proc->table_ptr + lvdev->rsc_offset;
 
