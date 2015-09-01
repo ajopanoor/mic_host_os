@@ -123,12 +123,43 @@ static void rpmsg_client_fixed_size_cb(struct rpmsg_channel *rpdev, void *data,
 	bsend += rpt->slen;
 }
 
+static void rpmsg_client_loopback_cb(struct rpmsg_channel *rpdev, void *data,
+					int len, void *priv, u32 src)
+{
+	int ret;
+	char buf[8];
+	u32 rmt_ept;
+	static unsigned long int reply_cnt;
+
+	rmt_ept = (u32 *)data[0];
+
+	BUG_ON(dst == 0);
+
+	snprintf(buf, 8, "%lu", ++reply_cnt);
+
+	ret = rpmsg_sendto(rpdev, src, buf, 8);
+	if (ret) {
+		dev_err(&rpdev->dev, "rpmsg_send failed:%d\n", ret);
+	}
+}
+
+struct rpmsg_endpoint *rpmsg_client_open_loopback_ept(struct rpmsg_channel *rpdev, unsigned long addr)
+{
+	struct rpmsg_endpoint *ept = NULL;
+	ept = rpmsg_create_ept(rpdev, rpmsg_client_loopback_cb, NULL, addr);
+	if (!ept)
+		dev_err(&rpdev->dev, "failed to create ept\n");
+
+	return ept;
+}
+
 void rpmsg_client_ping(struct rpmsg_client_vdev *rvdev,
 		 				struct rpmsg_test_args *targs)
 {
 	int ret = 0;
 	struct rpmsg_perf *rpt = &grpt;
 	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
+	u32 *payload;
 
 	INIT_STATS();
 
@@ -144,13 +175,16 @@ void rpmsg_client_ping(struct rpmsg_client_vdev *rvdev,
 	rpt->sbuf = vmalloc(rpt->slen);
 	rpt->rbuf = vmalloc(rpt->rlen);
 
+	payload = (u32 *) rpt->sbuf;
+	payload[0] = rvdev->src;
+
 	LOG_TIME(send_start_time);
 
 	switch (rpt->type) {
 		case RPMSG_FIXED_SIZE_LATENCY:
 			rpt->cb = rpmsg_client_fixed_size_cb;
 			if (rvdev->src)
-				ret = rpmsg_send_offchannel(rpdev, rvdev->src,
+				ret = rpmsg_send_offchannel(rpdev, rpmsg_lb_addr,
 						rpdev->dst, rpt->sbuf, rpt->slen);
 			else
 				ret = rpmsg_send(rpdev, rpt->sbuf, rpt->slen);

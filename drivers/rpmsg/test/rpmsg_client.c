@@ -43,8 +43,10 @@ static const char driver_name[] = "rpmsg_client";
 
 /* Globals */
 static struct rpmsg_client_device *rcdev;
+static struct rpmsg_endpoint *lb_ept;
 
 int rpmsg_bsp_addr = 1024;
+int rpmsg_lb_addr = 127;
 module_param(rpmsg_bsp_addr, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(rpmsg_bsp_addr, "BSP's RPMSG Address");
 
@@ -205,7 +207,6 @@ void rpmsg_ept_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	wake_up_interruptible(&rcdev->recvwait);
 }
 
-
 long rpmsg_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
 	struct rpmsg_client_vdev *rvdev = f->private_data;
@@ -227,7 +228,6 @@ long rpmsg_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 			if (copy_from_user(k_targs, argp, sizeof(*k_targs)))
 				return -EFAULT;
-
 			addr = k_targs->ept_addr;
 			ept = rpmsg_create_ept(rpdev, cb, rvdev, addr);
 			if (!ept) {
@@ -350,6 +350,11 @@ static int rpmsg_client_probe(struct rpmsg_channel *rpdev)
 	INIT_LIST_HEAD(&rcdev->recvqueue);
 	init_waitqueue_head(&rcdev->recvwait);
 	spin_lock_init(&rcdev->recv_spinlock);
+
+	lb_ept = rpmsg_client_open_loopback_ept(rpdev, rpmsg_lb_addr);
+	if (IS_ERR(lb_ept)) {
+		dev_err(&rpdev->dev, "ping looback endpoint create failed\n");
+	}
 	return ret;
 
 cdevice_create_fail:
@@ -417,6 +422,9 @@ module_init(rpmsg_client_init);
 
 static void __exit rpmsg_client_fini(void)
 {
+	if(lb_ept)
+		rpmsg_destroy_ept(lb_ept);
+
 	ida_simple_remove(&g_rpmsg_client_ida, rcdev->id);
 	cdev_del(&rcdev->cdev);
 	device_destroy(g_rpmsg_client_class, MKDEV(MAJOR(g_rpmsg_client_devno),

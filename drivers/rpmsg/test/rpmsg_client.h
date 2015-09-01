@@ -120,4 +120,7 @@ void rpmsg_client_ping(struct rpmsg_client_vdev *rvdev,
 void rpmsg_ping_cb(struct rpmsg_channel *rpdev, void *data, int len,
 						void *priv, u32 src);
 int rpmsg_ping_status(struct rpmsg_client_vdev *rvdev);
+struct rpmsg_endpoint *rpmsg_client_open_loopback_ept(struct rpmsg_channel *rpdev,
+		unsigned long addr);
+extern int rpmsg_lb_addr;
 #endif //_RPMSG_CLIENT_H
