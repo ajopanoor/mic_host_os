@@ -125,16 +125,11 @@ static void rpmsg_client_loopback_cb(struct rpmsg_channel *rpdev, void *data,
 {
 	int ret;
 	char buf[8];
-	u32 rmt_ept;
 	static unsigned long int reply_cnt;
-
-	rmt_ept = (u32 *)data[0];
-
-	BUG_ON(dst == 0);
 
 	snprintf(buf, 8, "%lu", ++reply_cnt);
 
-	ret = rpmsg_sendto(rpdev, src, buf, 8);
+	ret = rpmsg_sendto(rpdev, (void *)buf, 8, src);
 	if (ret) {
 		dev_err(&rpdev->dev, "rpmsg_send failed:%d\n", ret);
 	}
@@ -145,7 +140,7 @@ struct rpmsg_endpoint *rpmsg_client_open_loopback_ept(struct rpmsg_channel *rpde
 	struct rpmsg_endpoint *ept = NULL;
 	ept = rpmsg_create_ept(rpdev, rpmsg_client_loopback_cb, NULL, addr);
 	if (!ept)
-		1dev_err(&rpdev->dev, "failed to create ept\n");
+		dev_err(&rpdev->dev, "failed to create ept\n");
 
 	return ept;
 }
