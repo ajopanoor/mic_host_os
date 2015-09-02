@@ -96,7 +96,7 @@ struct rpmsg_client_device {
 	struct rpmsg_channel *rpdev;
 	struct list_head recvqueue;
 	spinlock_t recv_spinlock;
-	wait_queue_head_t recvwait;
+	wait_queue_head_t recv_wait;
 };
 
 struct rpmsg_client_vdev {
@@ -107,20 +107,29 @@ struct rpmsg_client_vdev {
 	wait_queue_head_t client_wait;
 };
 
+enum rpmsg_rblk_flags {
+	RPMSG_SHM_BUF	= 1,
+	RPMSG_DMA_BUF	= 2,
+};
+
 struct rpmsg_recv_blk{
 	int len;
 	void  *priv;
+	enum rpmsg_rblk_flags flags;
 	unsigned int addr;
 	const void *data;
 	struct list_head link;
+	struct list_head glink;
 };
 
 void rpmsg_client_ping(struct rpmsg_client_vdev *rvdev,
 		 				struct rpmsg_test_args *targs);
 void rpmsg_ping_cb(struct rpmsg_channel *rpdev, void *data, int len,
 						void *priv, u32 src);
+void rpmsg_loopback_cb(struct rpmsg_channel *rpdev, void *data, int len,
+						void *priv, u32 src);
 int rpmsg_ping_status(struct rpmsg_client_vdev *rvdev);
 struct rpmsg_endpoint *rpmsg_client_open_loopback_ept(struct rpmsg_channel *rpdev,
 		unsigned long addr);
-extern int rpmsg_lb_addr;
+extern int loop_addr;
 #endif //_RPMSG_CLIENT_H

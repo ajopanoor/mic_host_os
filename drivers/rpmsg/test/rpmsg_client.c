@@ -35,18 +35,28 @@ static struct ida g_rpmsg_client_ida;
 static struct class *g_rpmsg_client_class;
 /* Base device node number for rpmsg client devices */
 static dev_t g_rpmsg_client_devno;
+/* Global rblk list */
+static struct list_head g_rblk_list;
+static spinlock_t g_rblk_spinlock;
+
+static void *g_dma_pool;
+static int g_dma_pool_size;
 
 #define RPMSG_CLIENT_MAX_NUM_DEVS		256
 #define RPMSG_CLIENT_DEV			"crpmsg"
+#define MAX_DMA_RBLK_CNT			64
 
 static const char driver_name[] = "rpmsg_client";
 
 /* Globals */
 static struct rpmsg_client_device *rcdev;
 static struct rpmsg_endpoint *lb_ept;
+static struct rpmsg_endpoint *dma_ept;
 
-int rpmsg_bsp_addr = 1024;
-int rpmsg_lb_addr = 127;
+/* Static ept addresses */
+int loop_addr = 0x127;
+int dma_addr  = 0xDAC;
+int rpmsg_bsp_addr = 0x1024;
 module_param(rpmsg_bsp_addr, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(rpmsg_bsp_addr, "BSP's RPMSG Address");
 
@@ -77,6 +87,70 @@ static inline void rpmsg_queue(struct rpmsg_recv_blk *rblk,
 	spin_lock_irqsave(&rcdev->recv_spinlock, flags);
 	list_add_tail(&rblk->link, &rcdev->recvqueue);
 	spin_unlock_irqrestore(&rcdev->recv_spinlock, flags);
+}
+
+static inline void __put_rblk(struct rpmsg_recv_blk *rblk)
+{
+	unsigned long flags;
+
+	BUG_ON(!rblk);
+	spin_lock_irqsave(&g_rblk_spinlock, flags);
+	list_add_tail(&rblk->glink, &g_rblk_list);
+	spin_unlock_irqrestore(&g_rblk_spinlock, flags);
+}
+
+static inline struct rpmsg_recv_blk* __get_rblk(void)
+{
+	struct rpmsg_recv_blk *rblk = NULL;
+	unsigned long flags;
+
+	spin_lock_irqsave(&g_rblk_spinlock, flags);
+	if(!list_empty(&g_rblk_list)) {
+		rblk = list_first_entry(&g_rblk_list,
+				struct rpmsg_recv_blk, glink);
+		list_del(&rblk->glink);
+	}
+	spin_unlock_irqrestore(&g_rblk_spinlock, flags);
+	return rblk;
+}
+
+static inline void __free_rblks(void)
+{
+	struct rpmsg_recv_blk *rblk = NULL;
+	while((rblk = __get_rblk())) {
+		kfree(rblk);
+	}
+}
+
+static int __alloc_rblks(int count)
+{
+	struct rpmsg_recv_blk *rblk = NULL;
+	char *__pages;
+	int i = 0;
+
+	__pages = kmalloc((PAGE_SIZE * count), GFP_KERNEL);
+	if(!__pages){
+		printk(KERN_ERR "%s failed to allocate dma buffers", __func__);
+		return -ENOMEM;
+	}
+	while (i < count) {
+		rblk = kmalloc(sizeof(*rblk), GFP_ATOMIC);
+		if (!rblk) {
+			printk(KERN_ERR "kmalloc failed!\n");
+			goto enomem;
+		}
+		rblk->flags &= RPMSG_DMA_BUF;
+		rblk->data = __pages + (i * PAGE_SIZE);
+		__put_rblk(rblk);
+		i++;
+	}
+	g_dma_pool = __pages;
+	g_dma_pool_size = PAGE_SIZE * count;
+	return 0;
+enomem:
+	__free_rblks();
+	kfree(__pages);
+	return -ENOMEM;
 }
 
 static inline struct rpmsg_recv_blk* rpmsg_dequeue(struct list_head *queue)
@@ -110,7 +184,7 @@ rpmsg_read(struct file *f, char __user *buf, size_t count, loff_t *ppos)
 	if (!rblk) {
 		if (f->f_flags & O_NONBLOCK)
 			return -EAGAIN;
-		ret = wait_event_interruptible(rcdev->recvwait,
+		ret = wait_event_interruptible(rcdev->recv_wait,
 				(rblk = rpmsg_dequeue(&rcdev->recvqueue)));
 		if (ret)
 			return ret;
@@ -184,10 +258,31 @@ void rpmsg_client_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	rblk->len = len;
 	rblk->data = data;
 	rpmsg_queue(rblk, &rcdev->recvqueue);
-	wake_up_interruptible(&rcdev->recvwait);
+	wake_up_interruptible(&rcdev->recv_wait);
 }
 
 void rpmsg_ept_cb(struct rpmsg_channel *rpdev, void *data, int len,
+						void *priv, u32 src)
+{
+	struct rpmsg_recv_blk *rblk;
+
+	dev_info(&rpdev->dev, "%s: %d bytes from 0x%x [%4d]",__func__, len,
+						src, ((int *)data)[0]);
+
+	rblk = kmalloc(sizeof(*rblk), GFP_ATOMIC);
+	if (!rblk) {
+		dev_err(&rpdev->dev, "kmalloc failed!\n");
+		return;
+	}
+	rblk->addr = src;
+	rblk->priv = priv;
+	rblk->len = len;
+	rblk->data = data;
+	rpmsg_queue(rblk, &rcdev->recvqueue);
+	wake_up_interruptible(&rcdev->recv_wait);
+}
+
+void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
 						void *priv, u32 src)
 {
 	struct rpmsg_recv_blk *rblk;
@@ -204,7 +299,7 @@ void rpmsg_ept_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	rblk->len = len;
 	rblk->data = data;
 	rpmsg_queue(rblk, &rcdev->recvqueue);
-	wake_up_interruptible(&rcdev->recvwait);
+	wake_up_interruptible(&rcdev->recv_wait);
 }
 
 long rpmsg_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
@@ -311,14 +406,13 @@ static int rpmsg_client_probe(struct rpmsg_channel *rpdev)
 	if(rpdev->dst == RPMSG_ADDR_ANY)	//Hack for AP
 		rpdev->dst = rpmsg_bsp_addr;
 
-	dev_info(&rpdev->dev, "new channel: 0x%x -> 0x%x!\n",
-					rpdev->src, rpdev->dst);
 	rcdev = kzalloc(sizeof(*rcdev), GFP_KERNEL);
 	if (IS_ERR(rcdev)) {
 		ret = PTR_ERR(rcdev);
 		dev_err(&rpdev->dev, "rcdev kmalloc failed %d\n",ret);
 		return ret;
 	}
+
 	rcdev->id = ida_simple_get(&g_rpmsg_client_ida, 0,
 		       		RPMSG_CLIENT_MAX_NUM_DEVS, GFP_KERNEL);
 	if (rcdev->id < 0) {
@@ -326,15 +420,20 @@ static int rpmsg_client_probe(struct rpmsg_channel *rpdev)
 		dev_err(&rpdev->dev, "ida_simple_get failed %d\n", ret);
 		goto ida_fail;
 	}
+
 	devno = MKDEV(MAJOR(g_rpmsg_client_devno), rcdev->id);
+
 	cdev_init(&rcdev->cdev, &rpmsg_client_fops);
+
 	rcdev->cdev.owner = THIS_MODULE;
+
 	ret = cdev_add(&rcdev->cdev, devno, 1);
 	if (ret) {
 		dev_err(&rpdev->dev, "cdev_add err id %d ret %d\n",
 								rcdev->id, ret);
 		goto cdevice_init_fail;
 	}
+
 	device = device_create(g_rpmsg_client_class, NULL, devno, NULL,
 			 RPMSG_CLIENT_DEV "%d", rcdev->id);
 	if (IS_ERR(device)) {
@@ -344,16 +443,25 @@ static int rpmsg_client_probe(struct rpmsg_channel *rpdev)
 				rcdev->id);
 		goto cdevice_create_fail;
 	}
+
 	rcdev->rpdev = rpdev;
-	dev_info(&rpdev->dev, "device %s%d created MAJOR(%d) MINOR(%d)!\n",
-			RPMSG_CLIENT_DEV, rcdev->id, MAJOR(devno),MINOR(devno));
+
+	dev_info(&rpdev->dev, "%s /dev/%s%d (%d:%d) src 0x%x dst 0x%x\n",
+			rpdev->id.name, RPMSG_CLIENT_DEV, rcdev->id,
+			MAJOR(devno),MINOR(devno), rpdev->src, rpdev->dst);
+
 	INIT_LIST_HEAD(&rcdev->recvqueue);
-	init_waitqueue_head(&rcdev->recvwait);
+	init_waitqueue_head(&rcdev->recv_wait);
 	spin_lock_init(&rcdev->recv_spinlock);
 
-	lb_ept = rpmsg_client_open_loopback_ept(rpdev, rpmsg_lb_addr);
-	if (IS_ERR(lb_ept)) {
+	lb_ept = rpmsg_create_ept(rpdev, rpmsg_loopback_cb, NULL, loop_addr);
+	if (!lb_ept)
 		dev_err(&rpdev->dev, "ping looback endpoint create failed\n");
+
+	if(g_dma_pool) {
+		dma_ept = rpmsg_create_ept(rpdev, rpmsg_dma_cb, NULL, dma_addr);
+		if (!dma_ept)
+			dev_err(&rpdev->dev, "dma endpoint create failed\n");
 	}
 	return ret;
 
@@ -397,20 +505,31 @@ static int __init rpmsg_client_init(void)
 		printk(KERN_ERR "alloc_chrdev_region failed ret %d\n", ret);
 		return ret;
 	}
-	g_rpmsg_client_class = class_create(THIS_MODULE,
-						driver_name);
+	g_rpmsg_client_class = class_create(THIS_MODULE, driver_name);
 	if (IS_ERR(g_rpmsg_client_class)) {
 		ret = PTR_ERR(g_rpmsg_client_class);
 		printk(KERN_ERR "class_create failed ret %d\n", ret);
 		goto cleanup_chrdev;
 	}
 	ida_init(&g_rpmsg_client_ida);
+	INIT_LIST_HEAD(&g_rblk_list);
+	spin_lock_init(&g_rblk_spinlock);
+
+	if(__alloc_rblks(MAX_DMA_RBLK_CNT)) {
+		 printk(KERN_ERR "dma buffer alloc failed\n");
+		 goto cleanup_class;
+	}
+
 	ret = register_rpmsg_driver(&rpmsg_client);
 	if(ret) {
 		 printk(KERN_ERR "register_rpmsg_driver failed %d\n",ret);
-		 goto cleanup_class;
+		 goto cleanup_rblks;
 	}
 	return ret;
+
+cleanup_rblks:
+	__free_rblks();
+	kfree(g_dma_pool);
 cleanup_class:
 	class_destroy(g_rpmsg_client_class);
 cleanup_chrdev:
@@ -424,6 +543,9 @@ static void __exit rpmsg_client_fini(void)
 {
 	if(lb_ept)
 		rpmsg_destroy_ept(lb_ept);
+
+	if(dma_ept)
+		rpmsg_destroy_ept(dma_ept);
 
 	ida_simple_remove(&g_rpmsg_client_ida, rcdev->id);
 	cdev_del(&rcdev->cdev);
