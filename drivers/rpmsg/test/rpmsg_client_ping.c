@@ -129,6 +129,7 @@ static void rpmsg_client_loopback_cb(struct rpmsg_channel *rpdev, void *data,
 
 	snprintf(buf, 8, "%lu", ++reply_cnt);
 
+	dev_info(&rpdev->dev, "rpmsg ping request from %d (0x%x)\n", src, src);
 	ret = rpmsg_sendto(rpdev, (void *)buf, 8, src);
 	if (ret) {
 		dev_err(&rpdev->dev, "rpmsg_send failed:%d\n", ret);
@@ -175,7 +176,7 @@ void rpmsg_client_ping(struct rpmsg_client_vdev *rvdev,
 	switch (rpt->type) {
 		case RPMSG_FIXED_SIZE_LATENCY:
 			rpt->cb = rpmsg_client_ping_work;
-			ret = rpmsg_send_offchannel(rpdev, rpdev->src,
+			ret = rpmsg_send_offchannel(rpdev, rvdev->src,
 					rpmsg_lb_addr, rpt->sbuf, rpt->slen);
 			if (ret) {
 				dev_err(&rpdev->dev, "rpmsg_send failed: %d\n",

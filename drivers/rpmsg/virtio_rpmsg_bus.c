@@ -752,17 +752,17 @@ static void release_tx_bufs(struct virtproc_info *vrp)
 	struct buf_info *tx_info;
 	unsigned int count = 0;
 	unsigned int len;
-retry:
+
+	if (vrp->svq->num_free < vrp->max_frees)	//FIXME
+		mb();
+
 	while ((count < vrp->max_frees) &&
 			(tx_info = virtqueue_get_buf(vrp->svq, &len))) {
 
 		free_tx_buf(vrp, tx_info);
 		count++;
 	}
-	if (count == 0 && vrp->svq->num_free < vrp->max_frees) {
-		 virtqueue_enable_cb(vrp->svq);
-		 goto retry;
-	}
+
 	dev_info(&vrp->vdev->dev, "%s tx done num_free %d count %lu\n",__func__,
 			vrp->svq->num_free, count);
 }
@@ -1595,6 +1595,15 @@ static void rpmsg_remove(struct virtio_device *vdev)
 {
 	struct virtproc_info *vrp = vdev->priv;
 	int ret;
+
+	mutex_lock(&vrp->tx_lock);
+
+	mb();			//FIXME
+
+	/* Free up the used buffers in tx virtio ring */
+	release_tx_bufs(vrp);
+
+	mutex_unlock(&vrp->tx_lock);
 
 	vdev->config->reset(vdev);
 
