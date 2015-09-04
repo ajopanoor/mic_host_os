@@ -37,7 +37,7 @@ struct rpmsg_perf {
 	int times;
 	int state;
 	int wait;
-	enum rpmsg_ptest type;
+	enum __rpmsg_test_types type;
 	struct rpmsg_channel *rpdev;
 	void (*cb)(struct rpmsg_channel *rpdev, void *data, int len,
 			void *priv, unsigned long src);
@@ -148,7 +148,7 @@ void rpmsg_client_ping(struct rpmsg_client_vdev *rvdev,
 
 	rpt->slen = targs->sbuf_size;
 	rpt->rlen = targs->rbuf_size;
-	rpt->type = targs->test_type;
+	rpt->type = targs->type;
 	rpt->times = targs->num_runs;
 	rpt->wait = targs->wait;
 	rpt->rpdev = rpdev;
@@ -164,7 +164,7 @@ void rpmsg_client_ping(struct rpmsg_client_vdev *rvdev,
 	LOG_TIME(send_start_time);
 
 	switch (rpt->type) {
-		case RPMSG_FIXED_SIZE_LATENCY:
+		case RPMSG_PING:
 			rpt->cb = rpmsg_client_ping_work;
 			ret = rpmsg_send_offchannel(rpdev, rvdev->src,
 					loop_addr, rpt->sbuf, rpt->slen);

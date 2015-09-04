@@ -100,7 +100,8 @@ struct rpmsg_client_device {
 };
 
 struct rpmsg_client_vdev {
-	unsigned int src;
+	u32 src;
+	u32 dst;
 	void *priv;
 	struct rpmsg_client_device *rcdev;
 	struct rpmsg_endpoint *ept;
@@ -117,7 +118,7 @@ struct rpmsg_recv_blk{
 	void  *priv;
 	enum rpmsg_rblk_flags flags;
 	unsigned int addr;
-	const void *data;
+	void *data;
 	struct list_head link;
 	struct list_head glink;
 };

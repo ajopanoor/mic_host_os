@@ -17,61 +17,53 @@
 
 #define DEV_NAME	"/dev/crpmsg"
 #define PMAX		80
+#define TEST_INPUT_OPTS		"c:t:n:s:r:e:d:w:h"
 
 char path[PMAX];
 
-static void print_usage(void)
-{
-	fprintf(stderr, "Usage: test_rpmsg [-c cpu] [-t test_type] "
-			"[-n num_runs] \n[-s sbuf_size] [-r rbuf_siz]"
-			" [-e ept_addr] [-w wait]\n");
-	fprintf(stderr, "test types: (1) ping fix size\n"
-			"(2) ping var size\n(3) user space ipc test\n");
-}
 
-#define TEST_INPUT_OPTS		"c:t:n:s:r:e:w:h"
-void __random(int *buf, int len)
+static void __dump_args(struct rpmsg_test_args *targs)
 {
-
-	static unsigned int val;
-	unsigned int seed, i, times = len / sizeof(int);
-#if 0
-	FILE* urandom = fopen("/dev/urandom", "r");
-	fread(&seed, sizeof(int), 1, urandom);
-	fclose(urandom);
-	srand(seed);
-#endif
-	for(i=0; i < times; i++)
-		buf[i] = val;//rand();
-	val++;
-}
-
-static void dump_args(struct rpmsg_test_args *targs)
-{
-	printf("args: c=%d, t=%d, n=%d, s=%d, r=%d, e=%d w=%d\n",
-			targs->remote_cpu, targs->test_type,
+	printf("args: c=%d, t=%d, n=%d, s=%d, r=%d, e=%d d=%d w=%d\n",
+			targs->remote_cpu, targs->type,
 			targs->num_runs, targs->sbuf_size,
-			targs->rbuf_size, targs->ept_addr, targs->wait);
+			targs->rbuf_size, targs->src_ept,
+		        targs->dst_ept, targs->wait);
 }
 
-static void rpmsg_validate_ping_args(struct rpmsg_test_args *targs)
+static void __validate_all_args(struct rpmsg_test_args *targs)
 {
-	dump_args(targs);
-	assert(!((targs->remote_cpu == -1) && (targs->ept_addr ==  UINT_MAX)));
-	assert(!(targs->test_type == -1));
+	__dump_args(targs);
+	assert(!((targs->remote_cpu == -1) &&
+				(targs->dst_ept ==  UINT_MAX)));
+	assert(!(targs->type == -1));
 	assert(!(targs->sbuf_size == 0));
 	assert(!(targs->rbuf_size == 0));
 }
 
-static struct rpmsg_test_args *rpmsg_get_test_args(int argc, char *argv[])
+static void __print_usage(void)
+{
+	fprintf(stderr, "Usage:-\n"
+			"rpmsg_client [-c cpu] [-t type] [-n num_runs]\n" 
+			"\t\t [-s send_size] [-r recv_size] [-e src_ept]\n"
+			"\t\t [-d dst_ept] [-w wait]\n");
+
+	fprintf(stderr, "Test Types:-"
+			"\n\t(1) RPMSG Ping"
+			"\n\t(2) RPMSG Send"
+			"\n\t(3) RPMSG Recv\n");
+}
+
+static struct rpmsg_test_args *__get_args(int argc, char *argv[])
 {
 	struct rpmsg_test_args *targs;
 	int opt;
 
 	targs = malloc(sizeof(*targs));
 	targs->remote_cpu = -1;
-	targs->test_type = -1;
-	targs->ept_addr = UINT_MAX;
+	targs->type = -1;
+	targs->src_ept = UINT_MAX;
+	targs->dst_ept = UINT_MAX;
 	targs->num_runs = 1;
 	targs->wait = 0;
 
@@ -81,7 +73,7 @@ static struct rpmsg_test_args *rpmsg_get_test_args(int argc, char *argv[])
 				targs->remote_cpu = atoi(optarg);
 				break;
 			case 't':
-				targs->test_type = atoi(optarg);
+				targs->type = atoi(optarg);
 				break;
 			case 'n':
 				targs->num_runs = atoi(optarg);
@@ -93,7 +85,10 @@ static struct rpmsg_test_args *rpmsg_get_test_args(int argc, char *argv[])
 				targs->rbuf_size = atoi(optarg);
 				break;
 			case 'e':
-				targs->ept_addr = atoi(optarg);
+				targs->src_ept = atoi(optarg);
+				break;
+			case 'd':
+				targs->dst_ept = atoi(optarg);
 				break;
 			case 'w':
 				targs->wait = atoi(optarg);
@@ -101,100 +96,181 @@ static struct rpmsg_test_args *rpmsg_get_test_args(int argc, char *argv[])
 			case '?':
 			case 'h':
 			default:
-				print_usage();
+				__print_usage();
 				free(targs);
 				exit(EXIT_FAILURE);
 		}
 	}
 	return targs;
 }
+
+void __add_payload(int *buf, int len, bool r)
+{
+	static unsigned int val;
+	unsigned int seed, i, times = len / sizeof(int);
+	FILE* urandom = fopen("/dev/urandom", "r");
+
+	if(r){
+		fread(&seed, sizeof(int), 1, urandom);
+		fclose(urandom);
+		srand(seed);
+	}
+
+	for(i = 0; i < times; i++)
+		buf[i] = r ? rand() : val;
+
+	val++;
+}
+
 void __dump_buf(int *buf, int len)
 {
 	int i, times, t = len/sizeof(int);
 	times = t < 16 ? t : 16;
 
 	for(i=0; i < times; i+=4) {
-		printf("crpmsg[%d]: %x %x %x %x %x\n",i, buf[i], buf[i+1], buf[i+2], buf[i+3]);
+		printf("crpmsg[%d]: %x %x %x %x %x\n",i, buf[i], buf[i+1],
+				buf[i+2], buf[i+3]);
 	}
 }
 
-void rpmsg_multikern_ipc_test(int fd, struct rpmsg_test_args *targs)
+void rpmsg_cfg_ept(int fd, struct rpmsg_test_args *targs)
 {
-	void *sbuf = NULL, *rbuf = NULL;
-	int i,ret;
-
-	if(targs->ept_addr) {
-		ret = ioctl(fd, RPMSG_CLIENT_CREATE_EPT_IOCTL, targs->ept_addr);
+	int ret;
+	if (targs->src_ept) {
+		ret = ioctl(fd, RPMSG_CREATE_EPT_IOCTL, targs->src_ept);
 		if (ret < 0) {
 			printf(" IOCTL failed %s %s\n", path, strerror(errno));
 			return;
 		}
 	}
-
-	if (targs->sbuf_size) {
-		sbuf = malloc(targs->sbuf_size);
-		for(i = 0; i < targs->num_runs; i++) {
-			__random(sbuf, targs->sbuf_size);
-			if (write(fd, sbuf, targs->sbuf_size) < targs->sbuf_size) {
-				printf("Could not write to %s %s\n", path, strerror(errno));
-				goto err;
-			}
+	if (targs->dst_ept) {
+		ret = ioctl(fd, RPMSG_SETATTR_IOCTL, targs->dst_ept);
+		if (ret < 0) {
+			printf(" IOCTL failed %s %s\n", path, strerror(errno));
+			return;
 		}
 	}
+}
 
-	if(targs->rbuf_size) {
-		rbuf = malloc(targs->rbuf_size);
-		for(i = 0; i < targs->num_runs; i++) {
-			if (read(fd, rbuf, targs->rbuf_size) < 0){
-				printf("Could not read from %s %s\n", path, strerror(errno));
-				goto err;
-			}
-			__dump_buf(rbuf, targs->rbuf_size);
+static inline int open_crpmsg_dev(void)
+{
+	int fd, id = 0;
+
+	snprintf(path, PATH_MAX, DEV_NAME"%d", id);
+
+	fd = open(path, O_RDWR);
+	if (fd < 0)
+		printf("Could not open %s %s\n", path, strerror(errno));
+
+	return fd;
+}
+
+static void rpmsg_send(struct rpmsg_test_args *targs)
+{
+	void *sbuf = NULL;
+	int i, fd;
+
+	assert(targs->sbuf_size);
+
+	sbuf = malloc(targs->sbuf_size);
+	if(!sbuf) {
+		printf("malloc failed %s %s\n", path, strerror(errno));
+		return;
+	}
+
+	if((fd = open_crpmsg_dev()) < 0)
+		return;
+
+	rpmsg_cfg_ept(fd, targs);
+
+	for(i = 0; i < targs->num_runs; i++) {
+		__add_payload(sbuf, targs->sbuf_size, false);
+
+		if (write(fd, sbuf, targs->sbuf_size) < targs->sbuf_size) {
+			printf("Could not write to %s %s\n", path,
+					strerror(errno));
+			goto err;
 		}
 	}
 err:
-	if(rbuf) free(rbuf);
-	if(sbuf) free(sbuf);
+	free(sbuf);
+	close(fd);
+}
+static void rpmsg_recv(struct rpmsg_test_args *targs)
+{
+	void *rbuf = NULL;
+	int i, fd;
+
+	assert(targs->rbuf_size);
+
+	rbuf = malloc(targs->rbuf_size);
+	if(!rbuf) {
+		printf("malloc failed %s %s\n", path, strerror(errno));
+		return;
+	}
+
+	if((fd = open_crpmsg_dev()) < 0)
+		return;
+
+	for(i = 0; i < targs->num_runs; i++) {
+		if (read(fd, rbuf, targs->rbuf_size) < 0){
+			printf("Could not read from %s %s\n", path,
+					strerror(errno));
+			goto err;
+		}
+		__dump_buf(rbuf, targs->rbuf_size);
+	}
+err:
+	free(rbuf);
+	close(fd);
+}
+
+
+static void rpmsg_ping(struct rpmsg_test_args *targs)
+{
+	int fd, ret, id = 0;
+	unsigned int addr;
+
+	__validate_all_args(targs);
+
+	if((fd = open_crpmsg_dev()) < 0)
+		return;
+
+	ret = ioctl(fd, RPMSG_PING_IOCTL, (void *)targs);
+	if (ret < 0) {
+		printf(" IOCTL failed %s %s\n", path, strerror(errno));
+		return;
+	}
+
+	if(targs->wait) while(1);
+
+	ret = ioctl(fd, RPMSG_DESTROY_EPT_IOCTL, addr);
+	if (ret < 0) {
+		printf(" IOCTL failed %s %s\n", path, strerror(errno));
+		return;
+	}
+
+	close(fd);
 }
 
 int main(int argc, char *argv[])
 {
-	int fd, ret, id = 0;
 	struct rpmsg_test_args *targs;
-	unsigned int addr;
 
-	snprintf(path, PATH_MAX, DEV_NAME"%d", id);
-	fd = open(path, O_RDWR);
-	if (fd < 0) {
-		printf("Could not open %s %s\n", path, strerror(errno));
-		return;
-	}
+	targs = __get_args(argc, argv);
 
-	targs = rpmsg_get_test_args(argc, argv);
-
-	switch(targs->test_type) {
-		case RPMSG_FIXED_SIZE_LATENCY:
-		case RPMSG_VAR_SIZE_LATENCY:
-			rpmsg_validate_ping_args(targs);
-			ret = ioctl(fd, RPMSG_CLIENT_TEST_IOCTL, (void *)targs);
-			if (ret < 0) {
-				printf(" IOCTL failed %s %s\n", path, strerror(errno));
-				return;
-			}
-			if(!targs->wait) while(1);
-			ret = ioctl(fd, RPMSG_CLIENT_DESTROY_EPT_IOCTL, addr);
-			if (ret < 0) {
-				printf(" IOCTL failed %s %s\n", path, strerror(errno));
-				return;
-			}
+	switch(targs->type) {
+		case RPMSG_PING:
+			rpmsg_ping(targs);
 			break;
-		case RPMSG_USER_SPACE_IPC:
-			rpmsg_multikern_ipc_test(fd, targs);
+		case RPMSG_SEND:
+			rpmsg_send(targs);
+			break;
+		case RPMSG_RECV:
+			rpmsg_recv(targs);
 			break;
 		default:
-			printf("Invalid test type %d.\n(1) ping fix size\n"
-				"(2) ping var size\n(3) user space ipc test\n",
-			       	targs->test_type);
+			__print_usage();
 			break;
 	}
 }
