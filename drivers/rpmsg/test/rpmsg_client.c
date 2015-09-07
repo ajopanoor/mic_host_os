@@ -60,9 +60,12 @@ static struct rpmsg_endpoint *lb_ept;
 static struct rpmsg_endpoint *dma_ept;
 
 /* Static ept addresses */
-int loop_addr = 0x127;
-int dma_addr  = 0xDAC;
-int bsp_addr = 0x1024;
+int loop_addr =  127;
+int dma_addr  = 3500;
+int bsp_addr  = 8192;
+int ap_addr   = 2048;
+
+int is_bsp = 1;
 
 module_param(bsp_addr, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(bsp_addr, "BSP's RPMSG Address");
@@ -410,7 +413,6 @@ long rpmsg_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 			rvdev->src = addr;
 			rvdev->ept = ept;
-			ept->priv = rvdev;
 
 			break;
 		}
@@ -452,8 +454,8 @@ static int rpmsg_client_probe(struct rpmsg_channel *rpdev)
 	struct device *device = NULL;
 	dev_t devno;
 
-	if(rpdev->dst == RPMSG_ADDR_ANY)	//Hack for AP
-		rpdev->dst = bsp_addr;
+	rpdev->dst = (is_bsp ? ap_addr : bsp_addr);
+	rpdev->src = (is_bsp ? bsp_addr : ap_addr);
 
 	rcdev = kzalloc(sizeof(*rcdev), GFP_KERNEL);
 	if (IS_ERR(rcdev)) {

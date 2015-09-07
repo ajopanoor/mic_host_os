@@ -34,8 +34,6 @@ static void __dump_args(struct rpmsg_test_args *targs)
 static void __validate_all_args(struct rpmsg_test_args *targs)
 {
 	__dump_args(targs);
-	assert(!((targs->remote_cpu == -1) &&
-				(targs->dst_ept ==  UINT_MAX)));
 	assert(!(targs->type == -1));
 	assert(!(targs->sbuf_size == 0));
 	assert(!(targs->rbuf_size == 0));
@@ -44,7 +42,7 @@ static void __validate_all_args(struct rpmsg_test_args *targs)
 static void __print_usage(void)
 {
 	fprintf(stderr, "Usage:-\n"
-			"rpmsg_client [-c cpu] [-t type] [-n num_runs]\n" 
+			"rpmsg_client [-c cpu] [-t type] [-n num_runs]\n"
 			"\t\t [-s send_size] [-r recv_size] [-e src_ept]\n"
 			"\t\t [-d dst_ept] [-w wait]\n");
 
@@ -62,8 +60,8 @@ static struct rpmsg_test_args *__get_args(int argc, char *argv[])
 	targs = malloc(sizeof(*targs));
 	targs->remote_cpu = -1;
 	targs->type = -1;
-	targs->src_ept = UINT_MAX;
-	targs->dst_ept = UINT_MAX;
+	targs->src_ept = 0;
+	targs->dst_ept = 0;
 	targs->num_runs = 1;
 	targs->wait = 0;
 

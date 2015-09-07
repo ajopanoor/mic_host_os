@@ -1219,8 +1219,10 @@ static int rpmsg_recv_single_vrh(struct virtproc_info *vrp, struct device *dev,
 			/* farewell, ept, we don't need you anymore */
 			kref_put(&ept->refcount, __ept_release);
 		} else {
-			dev_warn(dev, "%s msg received with no recipient\n",
-					__func__);
+			dev_warn(dev, "No receipient? From: 0x%x, To: 0x%x,Len: %zu,"
+					"Flags: %d, Reserved: %d\n",
+					msg->src, msg->dst, len,
+					msg->flags, msg->reserved);
 			err++;
 		}
 		++riov->i;
