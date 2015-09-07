@@ -1263,10 +1263,8 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 			continue;
 		}
 		msgs_received++;
-#if 0
 		if(msgs_received >= (vrp->vrh->vring.num >> 2))
 			break;
-#endif
 	} while(true);
 exit:
 	switch(err) {
