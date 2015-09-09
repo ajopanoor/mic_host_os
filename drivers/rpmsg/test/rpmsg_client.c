@@ -26,6 +26,7 @@
 #include <linux/list.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
+#include <linux/vringh.h>
 #include "rpmsg_client_ioctl.h"
 #include "rpmsg_client.h"
 #include "../../misc/mic/host/mic_device.h"
@@ -35,6 +36,7 @@
 #define RPMSG_CLIENT_DEV			"crpmsg"
 #define MAX_DMA_RBLK_CNT			128
 #define RPMSG_DMA				1
+#define DMA_BUF_SIZE				PAGE_ALIGN(64 * 1024ULL)
 
 /* Driver name */
 static const char driver_name[] = "rpmsg_client";
@@ -54,16 +56,28 @@ static spinlock_t g_rblk_spinlock;
 static void *g_dma_pool;
 static int g_dma_pool_size;
 
+struct dma_buf_info{
+	void *va;
+	dma_addr_t da;
+	size_t len;
+};
+
+struct dma_buf_info *g_dma_buf_info;
+
+
 /* Globals epts */
 static struct rpmsg_client_device *rcdev;
+
 static struct rpmsg_endpoint *lb_ept;
 static struct rpmsg_endpoint *dma_ept;
+static struct rpmsg_endpoint *iov_ept;
 
 /* Static ept addresses */
 int loop_addr =  127;
-int dma_addr  = 3500;
 int bsp_addr  = 8192;
 int ap_addr   = 2048;
+int dma_addr  = 3500;
+int iov_addr  = 3501;
 
 int is_bsp = 1;
 
@@ -339,6 +353,162 @@ void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	wake_up_interruptible(&rcdev->recv_wait);
 }
 
+static int __dma_buf_alloc(struct mic_device *mdev, int len)
+{
+	struct dma_buf_info *dma_info;
+	int ret = -ENOMEM;
+
+	dma_info = kmalloc(sizeof(*dma_info), GFP_ATOMIC);
+	if(!dma_info) {
+		printk(KERN_ERR "%s failed to allocate dma buffers", __func__);
+		return ret;
+	}
+	dma_info->va = (void *)__get_free_pages(GFP_KERNEL | __GFP_ZERO,
+			get_order(len));
+	if(!dma_info->va){
+		printk(KERN_ERR "%s get_free_pages failed for dma buf", __func__);
+		goto free_dma_buf;
+	}
+#ifndef AP_KER
+	dma_info->da = mic_map_single(mdev, dma_info->va, len);
+	if (mic_map_error(dma_info->da)) {
+		printk(KERN_ERR "%s mic_map_single failed", __func__);
+		goto free_pages;
+	}
+#else
+	dma_info->da = __pa(dma_info->va);
+#endif
+	printk(KERN_INFO "alloc dma_buf %p size %d \n",dma_info->va, len);
+	g_dma_buf_info = dma_info;
+	return 0;
+
+free_pages:
+	free_pages((unsigned long)dma_info->va, get_order(len));
+free_dma_buf:
+	kfree(dma_info);
+	return ret;
+}
+
+static int __sync_dma(struct mic_device *mdev, dma_addr_t dst, dma_addr_t src,
+		size_t len)
+{
+	int err = 0;
+	struct dma_async_tx_descriptor *tx;
+	struct dma_chan *mic_ch = mdev->dma_ch[1];
+
+	if (!mic_ch) {
+		err = -EBUSY;
+		goto error;
+	}
+
+	tx = mic_ch->device->device_prep_dma_memcpy(mic_ch, dst, src, len,
+						    DMA_PREP_FENCE);
+	if (!tx) {
+		err = -ENOMEM;
+		goto error;
+	} else {
+		dma_cookie_t cookie = tx->tx_submit(tx);
+
+		err = dma_submit_error(cookie);
+		if (err)
+			goto error;
+		err = dma_sync_wait(mic_ch, cookie);
+	}
+error:
+	if (err)
+		printk(KERN_ERR "%s %d err %d\n", __func__, __LINE__, err);
+	return err;
+}
+
+
+static int __rpmsg_copy_to_user(struct mic_device *mdev, struct dma_buf_info *dinfo,
+				   size_t len, u64 daddr, size_t dlen)
+{
+	void __iomem *dbuf = mdev->aper.va + daddr;
+	size_t dma_alignment = 1 << mdev->dma_ch[1]->device->copy_align;
+	size_t dma_offset;
+	size_t partlen;
+	int err;
+
+	dma_offset = daddr - round_down(daddr, dma_alignment);
+	daddr -= dma_offset;
+	len += dma_offset;
+
+	while (len) {
+		partlen = min_t(size_t, len, DMA_BUF_SIZE);
+
+		err = __sync_dma(mdev, dinfo->da, daddr,
+				   ALIGN(partlen, dma_alignment));
+		if (err)
+			goto err;
+
+		daddr += partlen;
+		dbuf += partlen;
+		len -= partlen;
+		dma_offset = 0;
+	}
+	return 0;
+err:
+	printk(KERN_ERR "%s %d err %d\n", __func__, __LINE__, err);
+	return err;
+}
+
+static int __vringh_copy(struct mic_device *mdev, struct vringh_kiov *iov,
+		struct dma_buf_info *dinfo, size_t len, size_t *out_len)
+{
+	int ret = 0;
+	size_t partlen, tot_len = 0;
+
+	if(iov->i == 0) iov->i++; //HACK, we don't need the rpmsg iov->i == 0
+
+	while (len && iov->i < iov->used) {
+		partlen = min(iov->iov[iov->i].iov_len, len);
+		ret = __rpmsg_copy_to_user(mdev, dinfo, partlen,
+						(u64)iov->iov[iov->i].iov_base,
+						iov->iov[iov->i].iov_len);
+		if (ret) {
+			printk(KERN_ERR "%s %d err %d\n", __func__, __LINE__, ret);
+			break;
+		}
+		len -= partlen;
+		dinfo->va += partlen;
+		tot_len += partlen;
+		iov->consumed += partlen;
+		iov->iov[iov->i].iov_len -= partlen;
+		iov->iov[iov->i].iov_base += partlen;
+		if (!iov->iov[iov->i].iov_len) {
+			/* Fix up old iov element then increment. */
+			iov->iov[iov->i].iov_len = iov->consumed;
+			iov->iov[iov->i].iov_base -= iov->consumed;
+			iov->consumed = 0;
+			iov->i++;
+		}
+	}
+	*out_len = tot_len;
+	return ret;
+}
+
+void rpmsg_iov_cb(struct rpmsg_channel *rpdev, void *data, int len,
+						void *priv, u32 src)
+{
+	struct vringh_kiov *riov = data;
+	struct mic_device *mdev = priv;
+	size_t count;
+	int ret;
+
+	dev_info(&rpdev->dev, "%s: %d bytes from 0x%x",__func__, len, src);
+
+	if(!g_dma_buf_info) {
+		dev_err(&rpdev->dev, "%s DMA buffer unavailable \n",__func__);
+		return;
+	}
+
+	ret = __vringh_copy(mdev, riov, g_dma_buf_info, g_dma_buf_info->len,
+			&count);
+	if(ret)
+		dev_err(&rpdev->dev, "%s DMA failed\n",__func__);
+}
+
 int __copy_args_from_user(struct rpmsg_test_args **__ktargs, unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
@@ -450,9 +620,10 @@ static const struct file_operations rpmsg_client_fops = {
 
 static int rpmsg_client_probe(struct rpmsg_channel *rpdev)
 {
-	int ret = 0;
+	struct mic_device *mdev = dev_get_drvdata(&rpdev->dev);
 	struct device *device = NULL;
 	dev_t devno;
+	int ret = 0;
 
 	rpdev->dst = (is_bsp ? ap_addr : bsp_addr);
 	rpdev->src = (is_bsp ? bsp_addr : ap_addr);
@@ -508,13 +679,21 @@ static int rpmsg_client_probe(struct rpmsg_channel *rpdev)
 	lb_ept = rpmsg_create_ept(rpdev, rpmsg_loopback_cb, NULL, loop_addr);
 	if (!lb_ept)
 		dev_err(&rpdev->dev, "ping looback endpoint create failed\n");
+
 #ifdef RPMSG_DMA
 	if(g_dma_pool) {
-		struct mic_device *mdev = dev_get_drvdata(&rpdev->dev);
 		dma_ept = rpmsg_create_ept(rpdev, rpmsg_dma_cb, mdev, dma_addr);
 		if (!dma_ept)
 			dev_err(&rpdev->dev, "dma endpoint create failed\n");
 	}
+
+	ret = __dma_buf_alloc(mdev, DMA_BUF_SIZE);
+	if(ret)
+		return ret;
+
+	iov_ept = rpmsg_create_ept(rpdev, rpmsg_iov_cb, mdev, iov_addr);
+	if(!iov_ept)
+		dev_err(&rpdev->dev, "iov_ept create failed\n");
 #endif
 	return ret;
 
