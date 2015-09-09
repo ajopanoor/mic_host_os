@@ -341,5 +341,12 @@ int rpmsg_trysend_offchannel_zcopy(struct rpmsg_channel *rpdev, u32 src, u32 dst
 			false, cb, priv);
 }
 
+static inline
+int rpmsg_send_offchannel_zcopy(struct rpmsg_channel *rpdev, u32 src, u32 dst,
+			void *data, int len, rpmsg_tx_cb_t cb, void *priv)
+{
+	return rpmsg_send_offchannel_raw_zcopy(rpdev, src, dst, data, len,
+			true, cb, priv);
+}
 
 #endif /* _LINUX_RPMSG_H */

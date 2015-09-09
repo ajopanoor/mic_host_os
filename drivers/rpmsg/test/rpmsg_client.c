@@ -250,22 +250,40 @@ rpmsg_read(struct file *f, char __user *buf, size_t count, loff_t *ppos)
 	return copied;
 }
 
+static void __zcopy_free_buf(struct rpmsg_channel *rpdev, void *data, int len,
+		void *priv, u32 src)
+{
+	dev_info(&rpdev->dev,"%s src %u data %p priv %p len %d\n", __func__,
+			src, data, priv, len);
+}
 static ssize_t
 rpmsg_write(struct file *f, const char __user *buf, size_t count, loff_t *ppos)
 {
 	struct rpmsg_client_vdev *rvdev = f->private_data;
 	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
+	int buf_0 = ((int __user *)buf)[0];
 	int ret;
 
-	dev_info(&rpdev->dev,"%s user tx buf[%3d]\n",__func__,
-						((int __user *)buf)[0]);
+	if (rvdev->flags & (O_NONBLOCK|~O_SYNC)) {
+		dev_info(&rpdev->dev,"%s rpmsg_trysend_offchannel"
+				"buf[%3d]\n",__func__, buf_0);
 
-	if (f->f_flags & O_NONBLOCK)
 		ret = rpmsg_trysend_offchannel(rpdev, rvdev->src, rvdev->dst,
 			(void *)buf, (int)count);
-	else
+
+	} else if (rvdev->flags & O_SYNC) {
+		dev_info(&rpdev->dev,"%s rpmsg_send_offchannel_zcopy"
+				"buf[%3d]\n",__func__, buf_0);
+
+		ret = rpmsg_send_offchannel_zcopy(rpdev, rvdev->src, rvdev->dst,
+			(void *)buf, (int) count, __zcopy_free_buf, buf);
+	} else {
+		dev_info(&rpdev->dev,"%s rpmsg_send_offchannel"
+				"buf[%3d]\n",__func__, buf_0);
+
 		ret = rpmsg_send_offchannel(rpdev, rvdev->src, rvdev->dst,
 			(void *)buf, (int)count);
+	}
 	if(ret < 0)
 		return -ENOMEM;
 
@@ -509,7 +527,7 @@ void rpmsg_iov_cb(struct rpmsg_channel *rpdev, void *data, int len,
 		dev_err(&rpdev->dev, "%s DMA failed\n",__func__);
 }
 
-int __copy_args_from_user(struct rpmsg_test_args **__ktargs, unsigned long arg)
+static int __copy_args_from_user(struct rpmsg_test_args **__ktargs, unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
 
@@ -517,11 +535,46 @@ int __copy_args_from_user(struct rpmsg_test_args **__ktargs, unsigned long arg)
 	if (!__ktargs)
 		return -ENOMEM;
 
-	if (copy_from_user(*__ktargs, argp, sizeof(*__ktargs))) {
+	if (copy_from_user((*__ktargs), argp, sizeof(struct rpmsg_test_args))) {
 		kfree(*__ktargs);
 		return -EINVAL;
 	}
+
 	return 0;
+}
+
+static void __dump_args(struct rpmsg_test_args *targs)
+{
+	printk(KERN_INFO "args: c=%d, t=%d, n=%d, s=%d, r=%d, e=%d d=%d w=%d flags=%x\n",
+			targs->remote_cpu, targs->type,
+			targs->num_runs, targs->sbuf_size,
+			targs->rbuf_size, targs->src_ept,
+		        targs->dst_ept, targs->wait, targs->flags);
+}
+
+static void rpmsg_cfg_client_dev(struct rpmsg_client_vdev *rvdev, unsigned long arg)
+{
+	struct rpmsg_test_args *__ktargs = NULL;
+	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
+	void __user *argp = (void __user *)arg;
+	int ret;
+
+	ret = __copy_args_from_user(&__ktargs, arg);
+	if(ret) {
+		dev_err(&rpdev->dev, "%s __copy_args_from_user failed\n",
+				__func__);
+		return;
+	}
+	if (__ktargs->dst_ept && (__ktargs->dst_ept != rvdev->dst)) {
+		dev_info(&rpdev->dev, "%s cfg ept_dst %d\n", __func__,
+				__ktargs->dst_ept);
+		rvdev->dst = __ktargs->dst_ept;
+	}
+	if (__ktargs->flags & O_SYNC) {
+		dev_info(&rpdev->dev, "%s cfg zero-copy tx\n", __func__);
+		rvdev->flags |= O_SYNC;
+	}
+	kfree(__ktargs);
 }
 
 long rpmsg_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
@@ -596,9 +649,9 @@ long rpmsg_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			rvdev->ept = NULL;
 			break;
 		}
-		case RPMSG_SETATTR_IOCTL:
+		case RPMSG_CFG_DEV_IOCTL:
 		{
-			rvdev->dst = arg;
+			rpmsg_cfg_client_dev(rvdev, arg);
 			break;
 		}
 		default:

@@ -17,18 +17,18 @@
 
 #define DEV_NAME	"/dev/crpmsg"
 #define PMAX		80
-#define TEST_INPUT_OPTS		"c:t:n:s:r:e:d:w:h"
+#define TEST_INPUT_OPTS		"c:t:n:s:r:e:d:w:z:h"
 
 char path[PMAX];
 
 
 static void __dump_args(struct rpmsg_test_args *targs)
 {
-	printf("args: c=%d, t=%d, n=%d, s=%d, r=%d, e=%d d=%d w=%d\n",
+	printf("args: c=%d, t=%d, n=%d, s=%d, r=%d, e=%d d=%d w=%d flags=%x\n",
 			targs->remote_cpu, targs->type,
 			targs->num_runs, targs->sbuf_size,
 			targs->rbuf_size, targs->src_ept,
-		        targs->dst_ept, targs->wait);
+		        targs->dst_ept, targs->wait, targs->flags);
 }
 
 static void __validate_all_args(struct rpmsg_test_args *targs)
@@ -44,7 +44,7 @@ static void __print_usage(void)
 	fprintf(stderr, "Usage:-\n"
 			"rpmsg_client [-c cpu] [-t type] [-n num_runs]\n"
 			"\t\t [-s send_size] [-r recv_size] [-e src_ept]\n"
-			"\t\t [-d dst_ept] [-w wait]\n");
+			"\t\t [-d dst_ept] [-w wait] [-z zero-copy]\n");
 
 	fprintf(stderr, "Test Types:-"
 			"\n\t(1) RPMSG Ping"
@@ -55,6 +55,8 @@ static void __print_usage(void)
 static struct rpmsg_test_args *__get_args(int argc, char *argv[])
 {
 	struct rpmsg_test_args *targs;
+	int flags;
+	int zero_copy = 0;
 	int opt;
 
 	targs = malloc(sizeof(*targs));
@@ -64,6 +66,7 @@ static struct rpmsg_test_args *__get_args(int argc, char *argv[])
 	targs->dst_ept = 0;
 	targs->num_runs = 1;
 	targs->wait = 0;
+	targs->flags = 0;
 
 	while((opt = getopt(argc, argv, TEST_INPUT_OPTS)) != -1) {
 		switch (opt) {
@@ -91,6 +94,9 @@ static struct rpmsg_test_args *__get_args(int argc, char *argv[])
 			case 'w':
 				targs->wait = atoi(optarg);
 				break;
+			case 'z':
+				zero_copy = atoi(optarg);
+				break;
 			case '?':
 			case 'h':
 			default:
@@ -99,6 +105,10 @@ static struct rpmsg_test_args *__get_args(int argc, char *argv[])
 				exit(EXIT_FAILURE);
 		}
 	}
+
+	if (zero_copy != 0)
+		targs->flags |= O_SYNC;
+
 	return targs;
 }
 
@@ -131,26 +141,17 @@ void __dump_buf(int *buf, int len)
 	}
 }
 
-void rpmsg_cfg_ept(int fd, struct rpmsg_test_args *targs)
+void rpmsg_cfg_dev(int fd, struct rpmsg_test_args *targs)
 {
 	int ret;
-	if (targs->src_ept) {
-		ret = ioctl(fd, RPMSG_CREATE_EPT_IOCTL, targs->src_ept);
-		if (ret < 0) {
-			printf(" IOCTL failed %s %s\n", path, strerror(errno));
-			return;
-		}
-	}
-	if (targs->dst_ept) {
-		ret = ioctl(fd, RPMSG_SETATTR_IOCTL, targs->dst_ept);
-		if (ret < 0) {
-			printf(" IOCTL failed %s %s\n", path, strerror(errno));
-			return;
-		}
+	ret = ioctl(fd, RPMSG_CFG_DEV_IOCTL, (void *)targs);
+	if (ret < 0) {
+		printf(" IOCTL failed %s %s\n", path, strerror(errno));
+		return;
 	}
 }
 
-static inline int open_crpmsg_dev(void)
+static inline int open_crpmsg_dev(struct rpmsg_test_args *targs)
 {
 	int fd, id = 0;
 
@@ -176,10 +177,10 @@ static void rpmsg_send(struct rpmsg_test_args *targs)
 		return;
 	}
 
-	if((fd = open_crpmsg_dev()) < 0)
+	if((fd = open_crpmsg_dev(targs)) < 0)
 		return;
 
-	rpmsg_cfg_ept(fd, targs);
+	rpmsg_cfg_dev(fd, targs);
 
 	for(i = 0; i < targs->num_runs; i++) {
 		__add_payload(sbuf, targs->sbuf_size, false);
@@ -190,6 +191,8 @@ static void rpmsg_send(struct rpmsg_test_args *targs)
 			goto err;
 		}
 	}
+
+	if (targs->wait) while(1);
 err:
 	free(sbuf);
 	close(fd);
@@ -207,7 +210,7 @@ static void rpmsg_recv(struct rpmsg_test_args *targs)
 		return;
 	}
 
-	if((fd = open_crpmsg_dev()) < 0)
+	if((fd = open_crpmsg_dev(targs)) < 0)
 		return;
 
 	for(i = 0; i < targs->num_runs; i++) {
@@ -231,7 +234,7 @@ static void rpmsg_ping(struct rpmsg_test_args *targs)
 
 	__validate_all_args(targs);
 
-	if((fd = open_crpmsg_dev()) < 0)
+	if((fd = open_crpmsg_dev(targs)) < 0)
 		return;
 
 	ret = ioctl(fd, RPMSG_PING_IOCTL, (void *)targs);

@@ -3,7 +3,7 @@
 #include <linux/types.h>
 
 #define RPMSG_PING_IOCTL	_IOWR('s', 1, void *)
-#define RPMSG_SETATTR_IOCTL	_IOWR('s', 2, unsigned int)
+#define RPMSG_CFG_DEV_IOCTL	_IOWR('s', 2, void *)
 #define RPMSG_CREATE_EPT_IOCTL	_IOWR('s', 3, unsigned int)
 #define RPMSG_DESTROY_EPT_IOCTL	_IOWR('s', 4, unsigned int)
 
@@ -16,6 +16,7 @@ enum __rpmsg_test_types {
 };
 
 struct rpmsg_test_args {
+	int flags;
 	int remote_cpu;
 	int type;
 	int num_runs;

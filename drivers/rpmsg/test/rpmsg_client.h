@@ -102,6 +102,7 @@ struct rpmsg_client_device {
 struct rpmsg_client_vdev {
 	u32 src;
 	u32 dst;
+	int flags;
 	void *priv;
 	struct rpmsg_client_device *rcdev;
 	struct rpmsg_endpoint *ept;
