@@ -785,7 +785,7 @@ static void release_tx_bufs(struct virtproc_info *vrp)
 		count++;
 	}
 
-	dev_info(&vrp->vdev->dev, "%s tx done num_free %d count %lu\n",__func__,
+	dev_info(&vrp->vdev->dev, "%s Tx Done num_free %d count %u\n",__func__,
 			vrp->svq->num_free, count);
 }
 
@@ -1331,7 +1331,7 @@ static int rpmsg_recv_single_iov(struct virtproc_info *vrp, struct device *dev,
 	return err;
 }
 
-static inline bool __check_zcopy(struct virtproc_info *vrp,
+static inline bool __check_dma_ept(struct virtproc_info *vrp,
 		struct vringh_kiov *riov, struct rpmsg_hdr **msg)
 {
 	size_t len;
@@ -1343,13 +1343,12 @@ static inline bool __check_zcopy(struct virtproc_info *vrp,
 	return ((*msg)->flags || (*msg)->dst == 0xdad || (*msg)->dst == 0xdac);
 }
 
-static int rpmsg_recv_single_vrh(struct virtproc_info *vrp, struct device *dev,
-						struct vringh_kiov *riov)
+static int rpmsg_recv_single_dma(struct virtproc_info *vrp, struct device *dev,
+				struct vringh_kiov *riov, struct rpmsg_hdr *msg)
 {
 	struct rpmsg_endpoint *ept;
-	struct rpmsg_hdr *msg = msg;
 	void *data;
-	size_t alen, len, dlen = 0;
+	size_t len;
 	int err = 0;
 
 	BUG_ON(riov->i == riov->used);
@@ -1358,12 +1357,6 @@ static int rpmsg_recv_single_vrh(struct virtproc_info *vrp, struct device *dev,
 	do {
 		len = riov->iov[riov->i].iov_len;
 		data = (void *)riov->iov[riov->i].iov_base;
-		if(riov->i == 0) {
-			msg = data;
-			data = msg->data;
-			len -= sizeof(struct rpmsg_hdr);
-			dlen = msg->len;
-		}
 
 		dev_info(dev, "From: 0x%x, To: 0x%x, Len: %zu, Flags: %d, Reserved: %d\n",
 					msg->src, msg->dst, len,
@@ -1388,7 +1381,7 @@ static int rpmsg_recv_single_vrh(struct virtproc_info *vrp, struct device *dev,
 			mutex_lock(&ept->cb_lock);
 
 			if (ept->cb)
-				ept->cb(ept->rpdev, data, alen, ept->priv,
+				ept->cb(ept->rpdev, data, len, ept->priv,
 						msg->src);
 			mutex_unlock(&ept->cb_lock);
 
@@ -1402,14 +1395,10 @@ static int rpmsg_recv_single_vrh(struct virtproc_info *vrp, struct device *dev,
 			err++;
 		}
 		++riov->i;
-		dlen -= len;
 	} while(riov->i != riov->used);
-
-	BUG_ON(dlen != 0);
 
 	return err;
 }
-
 
 static int rpmsg_recv_single_vrh(struct virtproc_info *vrp, struct device *dev,
 						struct vringh_kiov *riov)
@@ -1422,16 +1411,7 @@ static int rpmsg_recv_single_vrh(struct virtproc_info *vrp, struct device *dev,
 
 	BUG_ON(riov->i == riov->used);
 	BUG_ON(riov->i != 0);
-#if 0
-	if (__check_zcopy(vrp, riov, &msg)) {
-		dev_info(dev, "From: 0x%x, To: 0x%x, Len: %u, Flags: %d, Reserved: %d\n",
-					msg->src, msg->dst, msg->len,
-					msg->flags, msg->reserved);
-		err = rpmsg_recv_single_iov(vrp, dev, riov, msg);
 
-		return err;
-	}
-#endif
 	do {
 		len = riov->iov[riov->i].iov_len;
 		data = __rpmsg_ptov(vrp,
@@ -1494,6 +1474,7 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 	struct device *dev = &vdev->dev;
 	struct vringh_kiov *riov = &vrp->vrh_ctx.riov;
 	unsigned int msgs_received = 0, msgs_dropped = 0;
+	struct rpmsg_hdr *msg;
 	int err;
 
 	do {
@@ -1511,7 +1492,11 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 			if (err <= 0)
 				goto exit;
 		}
-		err = rpmsg_recv_single_vrh(vrp, dev, riov);
+
+		if(__check_dma_ept(vrp, riov, &msg))
+			err = rpmsg_recv_single_dma(vrp, dev, riov, msg);
+		else
+			err = rpmsg_recv_single_vrh(vrp, dev, riov);
 		if (err){
 			msgs_dropped++;
 			continue;

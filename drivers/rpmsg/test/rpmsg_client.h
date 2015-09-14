@@ -120,6 +120,7 @@ struct rpmsg_recv_blk{
 	enum rpmsg_rblk_flags flags;
 	unsigned int addr;
 	void *data;
+	dma_addr_t da;
 	struct list_head link;
 	struct list_head glink;
 };
