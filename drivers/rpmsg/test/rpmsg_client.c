@@ -523,7 +523,7 @@ void rpmsg_iov_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	if(ret)
 		dev_err(&rpdev->dev, "%s DMA failed\n",__func__);
 
-	dev_info(&rpdev->dev, "%s: DMA-ed %uz bytes of %d sized buffer from"
+	dev_info(&rpdev->dev, "%s: DMAed %u bytes of %d sized buffer from "
 			"0x%x", __func__, count, len, src);
 }
 
@@ -553,7 +553,9 @@ void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
 		dev_err(&rpdev->dev, "%s DMA sync failed,fallback to memcpy\n",
 				__func__);
 		memcpy(rblk->data, dbuf, len);
-	}
+	} else
+		dev_info(&rpdev->dev, "%s: DMAed %u bytes from 0x%x", __func__,
+				len, src);
 
 	rpmsg_queue(rblk, &rcdev->recvqueue);
 	wake_up_interruptible(&rcdev->recv_wait);

@@ -1314,8 +1314,9 @@ static int rpmsg_recv_single_iov(struct virtproc_info *vrp, struct device *dev,
 		mutex_lock(&ept->cb_lock);
 
 		if (ept->cb)
-			ept->cb(ept->rpdev, (void *)riov, msg->len, ept->priv,
-					msg->src);
+			ept->cb(ept->rpdev, (void *)riov,
+					(msg->len + sizeof(*msg)),
+					ept->priv, msg->src);
 
 		mutex_unlock(&ept->cb_lock);
 
@@ -1331,16 +1332,16 @@ static int rpmsg_recv_single_iov(struct virtproc_info *vrp, struct device *dev,
 	return err;
 }
 
-static inline bool __check_dma_ept(struct virtproc_info *vrp,
-		struct vringh_kiov *riov, struct rpmsg_hdr **msg)
+static inline struct rpmsg_hdr *read_msg_hdr(struct virtproc_info *vrp,
+		struct vringh_kiov *riov)
 {
 	size_t len;
+	struct rpmsg_hdr *msg;
 
 	len = riov->iov[riov->i].iov_len;
+	msg = __rpmsg_ptov(vrp, (unsigned long)riov->iov[riov->i].iov_base, len);
 
-	*msg = __rpmsg_ptov(vrp, (unsigned long)riov->iov[riov->i].iov_base, len);
-
-	return ((*msg)->flags || (*msg)->dst == 0xdad || (*msg)->dst == 0xdac);
+	return msg;
 }
 
 static int rpmsg_recv_single_dma(struct virtproc_info *vrp, struct device *dev,
@@ -1492,18 +1493,27 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 			if (err <= 0)
 				goto exit;
 		}
-
-		if(__check_dma_ept(vrp, riov, &msg))
-			err = rpmsg_recv_single_dma(vrp, dev, riov, msg);
-		else
-			err = rpmsg_recv_single_vrh(vrp, dev, riov);
+		msg = read_msg_hdr(vrp, riov);
+		switch (msg->dst) {
+			case 0xdac:
+				err = rpmsg_recv_single_dma(vrp, dev, riov, msg);
+				break;
+			case 0xdad:
+				err = rpmsg_recv_single_iov(vrp, dev, riov, msg);
+				break;
+			default:
+				err = rpmsg_recv_single_vrh(vrp, dev, riov);
+				break;
+		}
 		if (err){
 			msgs_dropped++;
 			continue;
 		}
 		msgs_received++;
+#if 0
 		if(msgs_received >= (vrp->vrh->vring.num >> 2))
 			break;
+#endif
 	} while(true);
 exit:
 	switch(err) {
@@ -1769,7 +1779,7 @@ static int rpmsg_probe(struct virtio_device *vdev)
 		WARN_ON(err); /* sanity check; this can't really happen */
 	}
 #endif
-	vrp->max_frees = virtqueue_get_vring_size(vrp->svq) / 4;
+	vrp->max_frees = virtqueue_get_vring_size(vrp->svq) / 2;
 
 	/* suppress "tx-complete" interrupts */
 	virtqueue_disable_cb(vrp->svq);
