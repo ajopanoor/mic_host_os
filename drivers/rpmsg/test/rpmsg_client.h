@@ -89,6 +89,19 @@ struct rpmsg_client_stats {
 	}						\
 } while(0)
 
+/*
+ * On BSP/HOST rpmsg_client never announce the driver ept address, it
+ * dynamically allocate ept address from RPMSG_RESERVED_ADDRESSES range.
+ * As, 1024 is the first outside the RPMSG_RESERVED_ADDRESSES range,
+ * it is the one which RPMSG virtio diriver picks up, hence hard coding
+ * the bsp_addr as 1024. Dirty hack to use the same client dirver on AP & BSP
+ */
+
+#define LOOP_ADDR		127
+#define	BSP_ADDR		1024
+#define	DMA_ADDR		3500
+#define IOV_ADDR		3501
+
 struct dma_buf_info {
 	void *va;
 	dma_addr_t da;
@@ -151,5 +164,4 @@ void rpmsg_loopback_cb(struct rpmsg_channel *rpdev, void *data, int len,
 int rpmsg_ping_status(struct rpmsg_client_vdev *rvdev);
 struct rpmsg_endpoint *rpmsg_client_open_loopback_ept(struct rpmsg_channel *rpdev,
 		unsigned long addr);
-extern int loop_addr;
 #endif //_RPMSG_CLIENT_H

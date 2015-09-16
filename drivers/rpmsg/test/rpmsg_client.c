@@ -53,25 +53,6 @@ static dev_t g_rpmsg_client_devno;
 
 static struct rpmsg_client_device *rcdev;
 
-/* Globals epts */
-static struct rpmsg_endpoint *lb_ept;
-static struct rpmsg_endpoint *dma_ept;
-static struct rpmsg_endpoint *iov_ept;
-
-/*
- * On BSP/HOST rpmsg_client never announce the driver ept address, it
- * dynamically allocate ept address from RPMSG_RESERVED_ADDRESSES range.
- * As, 1024 is the first outside the RPMSG_RESERVED_ADDRESSES range,
- * it is the one which RPMSG virtio diriver picks up, hence hard coding
- * the bsp_addr as 1024. Dirty hack to use the same client dirver on AP & BSP
- */
-
-/* Static ept addresses */
-int loop_addr =  127;
-int bsp_addr  = 1024;
-int dma_addr  = 3500;
-int iov_addr  = 3501;
-
 int is_bsp = 1;
 
 struct rpmsg_client_vdev *rpmsg_init_rvdev(struct rpmsg_client_device *rcdev)
@@ -80,7 +61,7 @@ struct rpmsg_client_vdev *rpmsg_init_rvdev(struct rpmsg_client_device *rcdev)
 
 	rvdev = kzalloc(sizeof(*rvdev), GFP_KERNEL);
 	if(!rvdev)
-		return -ENOMEM;
+		return NULL;
 
 	rvdev->rcdev = rcdev;
 	rvdev->src = rcdev->rpdev->src;
@@ -88,18 +69,22 @@ struct rpmsg_client_vdev *rpmsg_init_rvdev(struct rpmsg_client_device *rcdev)
 
 	INIT_LIST_HEAD(&rvdev->rvq.recvqueue);
 	init_waitqueue_head(&rvdev->rvq.recv_wait);
-	spin_lock_init(&rcdev->rvq.recv_spinlock);
+	spin_lock_init(&rvdev->rvq.recv_spinlock);
 
 	return rvdev;
 }
 
 int rpmsg_open(struct inode *inode, struct file *f)
 {
-	struct rpmsg_client_vdev *rvdev;
+	struct rpmsg_client_vdev *rvdev=NULL;
 	struct rpmsg_client_device *rcdev = container_of(inode->i_cdev,
 			 struct rpmsg_client_device, cdev);
 
-	f->private_data = rpmsg_init_rvdev(rcdev);
+	rvdev = rpmsg_init_rvdev(rcdev);
+
+	BUG_ON(!rvdev);
+
+	f->private_data = rvdev;
 
 	return nonseekable_open(inode, f);
 }
@@ -128,7 +113,7 @@ static inline void __put_rblk(struct rpmsg_recv_blk *rblk)
 	spin_unlock_irqrestore(&rcdev->rblk_spinlock, flags);
 }
 
-static inline struct rpmsg_recv_blk* __get_rblk()
+static inline struct rpmsg_recv_blk* __get_rblk(void)
 {
 	struct rpmsg_recv_blk *rblk = NULL;
 	unsigned long flags;
@@ -216,7 +201,7 @@ rpmsg_read(struct file *f, char __user *buf, size_t count, loff_t *ppos)
 	struct rpmsg_client_device *rcdev = rvdev->rcdev;
 	struct rpmsg_channel *rpdev = rcdev->rpdev;
 	struct rpmsg_recv_blk *rblk;
-	struct recv_queue *rvq = &rvdev->rvq
+	struct recv_queue *rvq = &rvdev->rvq;
 	int ret, copied;
 
 	rblk = rpmsg_dequeue(&rvq->recvqueue);
@@ -367,8 +352,8 @@ int rpmsg_release(struct inode *inode, struct file *f)
 		rpmsg_destroy_ept(rvdev->ept);
 
 	kfree(rvdev);
-
 	f->private_data = NULL;
+
 	return 0;
 }
 
@@ -534,12 +519,13 @@ void rpmsg_iov_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	int ret;
 
 	BUG_ON(!dinfo);
+	BUG_ON(!rvdev);
 
 	ret = __vringh_copy(mdev, riov, dinfo, dinfo->len, &count);
 	if(ret)
 		dev_err(&rpdev->dev, "%s DMA failed\n",__func__);
 
-	dev_info(&rpdev->dev, "%s: DMA %u bytes of %d sized buffer from "
+	dev_info(&rpdev->dev, "%s: DMA %zu bytes of %d sized buffer from "
 			"0x%x", __func__, count, len, src);
 }
 
@@ -549,7 +535,7 @@ void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	struct mic_device *mdev = dev_get_drvdata(&rpdev->dev);
 	struct rpmsg_client_vdev *rvdev = priv;
 	struct rpmsg_recv_blk *rblk;
-	dma_addr_t src_addr = data;
+	dma_addr_t src_addr = (dma_addr_t)data;
 	int err;
 
 	dev_info(&rpdev->dev, "%s: %d bytes from 0x%x data 0x%x",__func__, len,
@@ -629,18 +615,18 @@ static void rpmsg_cfg_client_dev(struct rpmsg_client_vdev *rvdev, unsigned long 
 	kfree(__ktargs);
 }
 
-static inline rpmsg_rx_cb_t __get_cb(struct rpmsg_client_dev *rcdev, u32 addr)
+static inline rpmsg_rx_cb_t __get_cb(struct rpmsg_client_device *rcdev, u32 addr)
 {
 	rpmsg_rx_cb_t cb;
 
 	switch (addr) {
-		case dma_ept:
+		case DMA_ADDR:
 			cb = rpmsg_dma_cb;
 			break;
-		case lb_ept:
+		case LOOP_ADDR:
 			cb = rpmsg_loopback_cb;
 			break;
-		case iov_ept:
+		case IOV_ADDR:
 			cb = rpmsg_iov_cb;
 			break;
 		default:
@@ -663,7 +649,7 @@ static void create_ept(struct rpmsg_client_vdev *rvdev, unsigned long arg)
 	ept = rpmsg_create_ept(rpdev, cb, rvdev, addr);
 	if (!ept) {
 		dev_err(&rpdev->dev, "failed to create ept\n");
-		return -ENOMEM;
+		return;
 	}
 
 	rvdev->src = addr;
@@ -772,21 +758,20 @@ static inline void rpmsg_init_rblks(struct rpmsg_client_device *rcdev)
 		 printk(KERN_ERR "dma buffer alloc failed\n");
 		goto free_dma_buf;
 	}
-	rcdev->dma_buf_pool = dma_buf;
 	return;
 
 free_dma_buf:
 	__dma_buf_free(rpdev, dma_buf);
 }
+
 static int rpmsg_client_probe(struct rpmsg_channel *rpdev)
 {
-	struct mic_device *mdev = dev_get_drvdata(&rpdev->dev);
 	struct device *device = NULL;
 	dev_t devno;
 	int ret = 0;
 
 	 if(!is_bsp)
-		 rpdev->dst = bsp_addr;
+		 rpdev->dst = BSP_ADDR;
 
 	rcdev = kzalloc(sizeof(*rcdev), GFP_KERNEL);
 	if (IS_ERR(rcdev)) {
@@ -828,9 +813,12 @@ static int rpmsg_client_probe(struct rpmsg_channel *rpdev)
 
 	rcdev->rpdev = rpdev;
 
+	INIT_LIST_HEAD(&rcdev->rblk_list);
+	spin_lock_init(&rcdev->rblk_spinlock);
+
 	rcdev->g_rvdev = rpmsg_init_rvdev(rcdev);
 	if(rcdev->g_rvdev < 0)
-		goto cdevice_create_fail;
+		goto vdev_create_fail;
 
 	/*
 	 * Since the ept is already created for client driver without passing
@@ -839,10 +827,10 @@ static int rpmsg_client_probe(struct rpmsg_channel *rpdev)
 	rpdev->ept->priv = rcdev->g_rvdev;
 
 	rpmsg_init_rblks(rcdev);
+	BUG_ON(!rcdev->dma_buf_pool);
 
-	rcdev->dma_buf_iov = __dma_buf_alloc(rpdev, DMA_BUF_SIZE);
-
-	rpmsg_create_fixed_ept(rpdev);
+	rcdev->dma_buf_iov  = __dma_buf_alloc(rpdev, DMA_BUF_SIZE);
+	BUG_ON(!rcdev->dma_buf_iov);
 
 	dev_info(&rpdev->dev, "%s /dev/%s%d (%d:%d) src 0x%x dst 0x%x\n",
 			rpdev->id.name, RPMSG_CLIENT_DEV, rcdev->id,
@@ -850,7 +838,7 @@ static int rpmsg_client_probe(struct rpmsg_channel *rpdev)
 	return ret;
 
 vdev_create_fail:
-	device_destroy(g_rpmsg_client_class, devno, rcdev->id);
+	device_destroy(g_rpmsg_client_class, devno);
 cdevice_create_fail:
 	cdev_del(&rcdev->cdev);
 cdevice_init_fail:
@@ -898,8 +886,6 @@ static int __init rpmsg_client_init(void)
 		goto cleanup_chrdev;
 	}
 	ida_init(&g_rpmsg_client_ida);
-	INIT_LIST_HEAD(&g_rblk_list);
-	spin_lock_init(&g_rblk_spinlock);
 	ret = register_rpmsg_driver(&rpmsg_client);
 	if(ret) {
 		 printk(KERN_ERR "register_rpmsg_driver failed %d\n",ret);
@@ -921,17 +907,9 @@ static void __exit rpmsg_client_fini(void)
 {
 	struct rpmsg_channel *rpdev = rcdev->rpdev;
 
-	if(lb_ept)
-		rpmsg_destroy_ept(lb_ept);
-	if(dma_ept) {
-		__free_rblks();
-		__dma_buf_free(rpdev, dma_ept->priv);
-		rpmsg_destroy_ept(dma_ept);
-	}
-	if(iov_ept) {
-		__dma_buf_free(rpdev, iov_ept->priv);
-		rpmsg_destroy_ept(iov_ept);
-	}
+	__dma_buf_free(rpdev, rcdev->dma_buf_pool);
+	__dma_buf_free(rpdev, rcdev->dma_buf_iov);
+
 	/*
 	 *  FIXME add code to clean-up the outstanding rblks
 	 *  rpmsg_dequeue(..)

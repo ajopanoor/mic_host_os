@@ -111,7 +111,7 @@ static void rpmsg_client_ping_work(struct rpmsg_channel *rpdev, void *data,
 	__fill_data((char *)(rpt->sbuf + sizeof(struct rpmsg_hdr)),
 					(rpt->slen - sizeof(struct rpmsg_hdr)));
 	ret = rpmsg_send_offchannel(rpdev, rvdev->src,
-					loop_addr, rpt->sbuf, rpt->slen);
+					LOOP_ADDR, rpt->sbuf, rpt->slen);
 	if (ret)
 		dev_err(&rpdev->dev, "rpmsg_send failed: %d\n", ret);
 
@@ -167,7 +167,7 @@ void rpmsg_client_ping(struct rpmsg_client_vdev *rvdev,
 		case RPMSG_PING:
 			rpt->cb = rpmsg_client_ping_work;
 			ret = rpmsg_send_offchannel(rpdev, rvdev->src,
-					loop_addr, rpt->sbuf, rpt->slen);
+					LOOP_ADDR, rpt->sbuf, rpt->slen);
 			if (ret) {
 				dev_err(&rpdev->dev, "rpmsg_send failed: %d\n",
 					       	ret);
