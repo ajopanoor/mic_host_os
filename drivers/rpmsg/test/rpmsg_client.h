@@ -89,14 +89,30 @@ struct rpmsg_client_stats {
 	}						\
 } while(0)
 
+struct dma_buf_info {
+	void *va;
+	dma_addr_t da;
+	void *priv;
+	size_t len;
+};
+
+struct recv_queue {
+	struct list_head recvqueue;
+	spinlock_t recv_spinlock;
+	wait_queue_head_t recv_wait;
+};
+
+struct rpmsg_client_vdev;
 struct rpmsg_client_device {
 	int id;
 	void *priv;
 	struct cdev cdev;
 	struct rpmsg_channel *rpdev;
-	struct list_head recvqueue;
-	spinlock_t recv_spinlock;
-	wait_queue_head_t recv_wait;
+	struct list_head rblk_list;
+	spinlock_t rblk_spinlock;
+	struct rpmsg_client_vdev *g_rvdev;
+	struct dma_buf_info *dma_buf_pool;
+	struct dma_buf_info *dma_buf_iov;
 };
 
 struct rpmsg_client_vdev {
@@ -106,6 +122,7 @@ struct rpmsg_client_vdev {
 	void *priv;
 	struct rpmsg_client_device *rcdev;
 	struct rpmsg_endpoint *ept;
+	struct recv_queue rvq;
 	wait_queue_head_t client_wait;
 };
 
@@ -121,8 +138,8 @@ struct rpmsg_recv_blk{
 	unsigned int addr;
 	void *data;
 	dma_addr_t da;
-	struct list_head link;
-	struct list_head glink;
+	struct list_head vlink;
+	struct list_head clink;
 };
 
 void rpmsg_client_ping(struct rpmsg_client_vdev *rvdev,
