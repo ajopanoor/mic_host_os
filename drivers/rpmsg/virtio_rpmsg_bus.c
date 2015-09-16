@@ -1479,7 +1479,7 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 	int err;
 
 	do {
-		if(riov->i == riov->used) {
+		if (riov->i == riov->used) {
 			dev_info(dev, "riov.i %d riov.used %d ctx.head %d\n",
 					riov->i, riov->used, vrp->vrh_ctx.head);
 			if(vrp->vrh_ctx.head != USHRT_MAX){
@@ -1510,10 +1510,10 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 			continue;
 		}
 		msgs_received++;
-#if 0
-		if(msgs_received >= (vrp->vrh->vring.num >> 2))
-			break;
-#endif
+
+		if (msgs_received >= (vrp->vrh->vring.num >> 2) &&
+				(vringh_need_notify_kern(vrp->vrh) > 0))
+			vringh_notify(vrp->vrh);
 	} while(true);
 exit:
 	switch(err) {

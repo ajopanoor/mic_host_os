@@ -37,7 +37,6 @@
 #define MAX_DMA_RBLK_CNT			128
 #define RPMSG_DMA				1
 #define RPMSG_IOV_DMA				0
-#define HOST					1
 #define DMA_BUF_SIZE				PAGE_ALIGN(64 * 1024ULL)
 
 /* Driver name */
