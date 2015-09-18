@@ -194,6 +194,17 @@ static inline void __kfree(struct rpmsg_recv_blk *rblk)
 		kfree(rblk);
 }
 
+static void rpmsg_free_rvdev(struct rpmsg_client_vdev *rvdev)
+{
+	struct recv_queue *rvq = &rvdev->rvq;
+	struct rpmsg_recv_blk *rblk;
+
+	while(rblk = rpmsg_dequeue(rvq)) {
+		__kfree(rblk);
+	}
+	return;
+}
+
 static ssize_t
 rpmsg_read(struct file *f, char __user *buf, size_t count, loff_t *ppos)
 {
@@ -214,7 +225,7 @@ rpmsg_read(struct file *f, char __user *buf, size_t count, loff_t *ppos)
 			return ret;
 	}
 
-	dev_info(&rpdev->dev, "%s: %d bytes from %u ",__func__,
+	dev_dbg(&rpdev->dev, "%s: %d bytes from %u ",__func__,
 						rblk->len, rblk->addr);
 	if(rblk->len > count) {
 		dev_err(&rpdev->dev, "%s: packet too big %d > %zu\n",__func__,
@@ -291,7 +302,7 @@ static void __zcopy_free_buf(struct rpmsg_channel *rpdev, void *data, int len,
 {
 	struct dma_buf_info *sbuf = priv;
 
-	dev_info(&rpdev->dev,"%s src %u data %p priv %p len %d\n", __func__,
+	dev_dbg(&rpdev->dev,"%s src %u data %p priv %p len %d\n", __func__,
 			src, data, priv, len);
 
 	__dma_buf_free(rpdev, sbuf);
@@ -338,7 +349,7 @@ write_fail:
 	if(ret < 0)
 		return 0;
 
-	dev_info(&rpdev->dev,"%s Flag %x Tx Buf[0] %d \n", __func__,
+	dev_dbg(&rpdev->dev,"%s Flag %x Tx Buf[0] %d \n", __func__,
 			rvdev->flags, buf_0);
 	return count;
 
@@ -348,10 +359,11 @@ int rpmsg_release(struct inode *inode, struct file *f)
 {
 	struct rpmsg_client_vdev *rvdev = f->private_data;
 
+	rpmsg_free_rvdev(rvdev);
+
 	if(rvdev->ept)
 		rpmsg_destroy_ept(rvdev->ept);
 
-	kfree(rvdev);
 	f->private_data = NULL;
 
 	return 0;
@@ -363,7 +375,7 @@ void rpmsg_client_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	struct rpmsg_recv_blk *rblk;
 	struct rpmsg_client_vdev *rvdev = priv;
 
-	dev_info(&rpdev->dev, "%s: %d bytes from 0x%x [%4d]",__func__, len,
+	dev_dbg(&rpdev->dev, "%s: %d bytes from 0x%x [%4d]",__func__, len,
 						src, ((int *)data)[0]);
 
 	rblk = kmalloc(sizeof(*rblk), GFP_ATOMIC);
@@ -390,7 +402,7 @@ void rpmsg_ept_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	struct rpmsg_recv_blk *rblk;
 	struct rpmsg_client_vdev *rvdev = priv;
 
-	dev_info(&rpdev->dev, "%s: %d bytes from 0x%x [%4d]",__func__, len,
+	dev_dbg(&rpdev->dev, "%s: %d bytes from 0x%x [%4d]",__func__, len,
 						src, ((int *)data)[0]);
 
 	rblk = kmalloc(sizeof(*rblk), GFP_ATOMIC);
@@ -525,7 +537,7 @@ void rpmsg_iov_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	if(ret)
 		dev_err(&rpdev->dev, "%s DMA failed\n",__func__);
 
-	dev_info(&rpdev->dev, "%s: DMA %zu bytes of %d sized buffer from "
+	dev_dbg(&rpdev->dev, "%s: DMA %zu bytes of %d sized buffer from "
 			"0x%x", __func__, count, len, src);
 }
 
@@ -538,7 +550,7 @@ void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	dma_addr_t src_addr = (dma_addr_t)data;
 	int err;
 
-	dev_info(&rpdev->dev, "%s: %d bytes from 0x%x data 0x%x",__func__, len,
+	dev_dbg(&rpdev->dev, "%s: %d bytes from 0x%x data 0x%x",__func__, len,
 			src, data);
 
 	rblk = __get_rblk();
@@ -559,7 +571,7 @@ void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
 				__func__);
 		memcpy(rblk->data, dbuf, len);
 	} else
-		dev_info(&rpdev->dev, "%s: DMAed %u bytes from 0x%x", __func__,
+		dev_dbg(&rpdev->dev, "%s: DMAed %u bytes from 0x%x", __func__,
 				len, src);
 
 	rpmsg_queue(rblk, &rvdev->rvq.recvqueue);
@@ -758,6 +770,7 @@ static inline void rpmsg_init_rblks(struct rpmsg_client_device *rcdev)
 		 printk(KERN_ERR "dma buffer alloc failed\n");
 		goto free_dma_buf;
 	}
+	rcdev->dma_buf_pool = dma_buf;
 	return;
 
 free_dma_buf:

@@ -1359,10 +1359,10 @@ static int rpmsg_recv_single_dma(struct virtproc_info *vrp, struct device *dev,
 		len = riov->iov[riov->i].iov_len;
 		data = (void *)riov->iov[riov->i].iov_base;
 
+#if 0
 		dev_info(dev, "From: 0x%x, To: 0x%x, Len: %zu, Flags: %d, Reserved: %d\n",
 					msg->src, msg->dst, len,
 					msg->flags, msg->reserved);
-#if 0
 		print_hex_dump(KERN_DEBUG, "rpmsg_virtio RX: ", DUMP_PREFIX_NONE, 16, 1,
 					msg, sizeof(*msg) + msg->len, true);
 #endif
@@ -1424,10 +1424,10 @@ static int rpmsg_recv_single_vrh(struct virtproc_info *vrp, struct device *dev,
 			dlen = msg->len;
 		}
 
+#if 0
 		dev_info(dev, "From: 0x%x, To: 0x%x, Len: %zu, Flags: %d, Reserved: %d\n",
 					msg->src, msg->dst, len,
 					msg->flags, msg->reserved);
-#if 0
 		print_hex_dump(KERN_DEBUG, "rpmsg_virtio RX: ", DUMP_PREFIX_NONE, 16, 1,
 					msg, sizeof(*msg) + msg->len, true);
 #endif
@@ -1480,7 +1480,7 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 
 	do {
 		if (riov->i == riov->used) {
-			dev_info(dev, "riov.i %d riov.used %d ctx.head %d\n",
+			dev_dbg(dev, "riov.i %d riov.used %d ctx.head %d\n",
 					riov->i, riov->used, vrp->vrh_ctx.head);
 			if(vrp->vrh_ctx.head != USHRT_MAX){
 				vringh_complete_kern(vrp->vrh,
@@ -1512,8 +1512,11 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 		msgs_received++;
 
 		if (msgs_received >= (vrp->vrh->vring.num >> 2) &&
-				(vringh_need_notify_kern(vrp->vrh) > 0))
+				(vringh_need_notify_kern(vrp->vrh) > 0)) {
+			dev_info(dev, "Used Idx update after receiving %u msgs\n",
+						msgs_received);
 			vringh_notify(vrp->vrh);
+		}
 	} while(true);
 exit:
 	switch(err) {

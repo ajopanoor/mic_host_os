@@ -95,7 +95,7 @@ static bool mic_proc_virtio_notify(struct virtqueue *vq)
 	mic_proc = (struct mic_proc *)lvring->rvdev->rproc;
 	db = mic_proc->table_ptr->h2c_db;
 
-	dev_info(mic_proc->dev, "%s %s\n", __func__, vq->name);
+	dev_dbg(mic_proc->dev, "%s %s\n", __func__, vq->name);
 	mic_proc->mdev->ops->send_intr(mic_proc->mdev, db);
 	return true;
 }
@@ -109,7 +109,7 @@ static void mic_proc_virtio_vringh_notify(struct vringh *vrh)
 	mic_proc = (struct mic_proc *)lvring->rvdev->rproc;
 	db = mic_proc->table_ptr->h2c_db;
 
-	dev_info(mic_proc->dev, "%s %s\n", __func__, "vrh");
+	dev_dbg(mic_proc->dev, "%s %s\n", __func__, "vrh");
 	mic_proc->mdev->ops->send_intr(mic_proc->mdev, db);
 }
 

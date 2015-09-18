@@ -133,21 +133,31 @@ void __add_payload(int *buf, int len, bool r)
 void __dump_buf(int *buf, int len)
 {
 	int i, times, t = len/sizeof(int);
-	times = t < 16 ? t : 16;
+	times = t < 8 ? t : 8;
 
 	for(i=0; i < times; i+=4) {
-		printf("crpmsg[%d]: %x %x %x %x %x\n",i, buf[i], buf[i+1],
+		printf("0x%04x: %04d %04d %04d %04d \n",&buf[i], buf[i], buf[i+1],
 				buf[i+2], buf[i+3]);
 	}
 }
 
-void rpmsg_cfg_dev(int fd, struct rpmsg_test_args *targs)
+int rpmsg_cfg_dev(int fd, struct rpmsg_test_args *targs)
 {
-	int ret;
-	ret = ioctl(fd, RPMSG_CFG_DEV_IOCTL, (void *)targs);
-	if (ret < 0) {
-		printf(" IOCTL failed %s %s\n", path, strerror(errno));
-		return;
+	int ret = 0;
+
+	if (targs->dst_ept || targs->flags) {
+		ret = ioctl(fd, RPMSG_CFG_DEV_IOCTL, (void *)targs);
+		if (ret < 0) {
+			printf(" IOCTL failed %s %s\n", path, strerror(errno));
+			return ret;
+		}
+	}
+	if (targs->src_ept) {
+		ret = ioctl(fd, RPMSG_CREATE_EPT_IOCTL, targs->src_ept);
+		if (ret < 0) {
+			printf(" IOCTL failed %s %s\n", path, strerror(errno));
+			return ret;
+		}
 	}
 }
 
@@ -180,7 +190,10 @@ static void rpmsg_send(struct rpmsg_test_args *targs)
 	if((fd = open_crpmsg_dev(targs)) < 0)
 		return;
 
-	rpmsg_cfg_dev(fd, targs);
+	if(rpmsg_cfg_dev(fd, targs) < 0) {
+		printf("ioctl failed %s %s\n", path, strerror(errno));
+		return;
+	}
 
 	for(i = 0; i < targs->num_runs; i++) {
 		__add_payload(sbuf, targs->sbuf_size, false);
@@ -197,6 +210,7 @@ err:
 	free(sbuf);
 	close(fd);
 }
+
 static void rpmsg_recv(struct rpmsg_test_args *targs)
 {
 	void *rbuf = NULL;
@@ -212,6 +226,12 @@ static void rpmsg_recv(struct rpmsg_test_args *targs)
 
 	if((fd = open_crpmsg_dev(targs)) < 0)
 		return;
+
+	if(rpmsg_cfg_dev(fd, targs) < 0) {
+		printf("ioctl failed %s %s\n", path, strerror(errno));
+		return;
+	}
+
 
 	for(i = 0; i < targs->num_runs; i++) {
 		if (read(fd, rbuf, targs->rbuf_size) < 0){
@@ -230,7 +250,7 @@ err:
 static void rpmsg_ping(struct rpmsg_test_args *targs)
 {
 	int fd, ret, id = 0;
-	unsigned int addr;
+	unsigned int addr = targs->src_ept;
 
 	__validate_all_args(targs);
 
