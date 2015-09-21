@@ -22,6 +22,7 @@ struct rpmsg_test_args {
 	int num_runs;
 	int sbuf_size;
 	int rbuf_size;
+	int verbose;
 	unsigned int src_ept;
 	unsigned int dst_ept;
 	int wait;

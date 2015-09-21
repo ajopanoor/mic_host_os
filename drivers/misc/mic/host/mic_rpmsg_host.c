@@ -78,10 +78,9 @@ static void mic_proc_rpmsg_work(struct work_struct *work)
 		container_of(work, struct mic_proc, vq_work);
 	int i;
 
-	dev_info(mic_proc->dev, "%s: bottom half\n", __func__);
 	for (i = 0; i <= mic_proc->max_notifyid; i++) {
 		if(mic_proc_vq_interrupt(mic_proc, i) == IRQ_NONE) {
-			printk(KERN_DEBUG "%s No work to do vq %d\n",__func__,i);
+			//printk(KERN_DEBUG "%s No work to do vq %d\n",__func__,i);
 		}
 	}
 }
@@ -482,6 +481,7 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 static irqreturn_t mic_proc_callback(int irq, void *data)
 {
 	struct mic_proc *mic_proc = data;
+	struct mic_device *mdev = mic_proc->mdev;
 	struct device *dev;
 	int i = 0;
 
@@ -489,8 +489,9 @@ static irqreturn_t mic_proc_callback(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 	dev = mic_proc->dev;
+	mdev->ops->intr_workarounds(mdev);
 #ifdef CONFIG_MIC_RPMSG_WQ
-	dev_info(dev, "%s vq work queued\n",__func__);
+	dev_dbg(dev, "%s vq work queued\n",__func__);
 	queue_work(mic_rpmsg_wq, &mic_proc->vq_work);
 #else
 	for (i = 0; i <= mic_proc->max_notifyid; i++) {

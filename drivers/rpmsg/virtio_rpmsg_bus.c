@@ -1474,7 +1474,7 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 	struct virtproc_info *vrp = vdev->priv;
 	struct device *dev = &vdev->dev;
 	struct vringh_kiov *riov = &vrp->vrh_ctx.riov;
-	unsigned int msgs_received = 0, msgs_dropped = 0;
+	unsigned int msgs_received = 0, msgs_dropped = 0, part = 0;
 	struct rpmsg_hdr *msg;
 	int err;
 
@@ -1510,12 +1510,11 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 			continue;
 		}
 		msgs_received++;
-
-		if (msgs_received >= (vrp->vrh->vring.num >> 2) &&
+		part++;
+		if (part >= (vrp->vrh->vring.num >> 2) &&
 				(vringh_need_notify_kern(vrp->vrh) > 0)) {
-			dev_info(dev, "Used Idx update after receiving %u msgs\n",
-						msgs_received);
 			vringh_notify(vrp->vrh);
+			part = 0;
 		}
 	} while(true);
 exit:

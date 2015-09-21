@@ -216,7 +216,7 @@ static int mic_setup_msix(struct mic_device *mdev, struct pci_dev *pdev)
 	rc = pci_enable_msix_exact(pdev, mdev->irq_info.msix_entries,
 		MIC_MIN_MSIX);
 	if (rc) {
-		dev_dbg(&pdev->dev, "Error enabling MSIx. rc = %d\n", rc);
+		dev_info(&pdev->dev, "Error enabling MSIx. rc = %d\n", rc);
 		goto err_enable_msix;
 	}
 
@@ -229,7 +229,7 @@ static int mic_setup_msix(struct mic_device *mdev, struct pci_dev *pdev)
 		goto err_nomem2;
 	}
 
-	dev_dbg(mdev->sdev->parent,
+	dev_info(&pdev->dev,
 		"%d MSIx irqs setup\n", mdev->irq_info.num_vectors);
 	return 0;
 err_nomem2:
@@ -313,7 +313,7 @@ static int mic_setup_msi(struct mic_device *mdev, struct pci_dev *pdev)
 
 	rc = pci_enable_msi(pdev);
 	if (rc) {
-		dev_dbg(&pdev->dev, "Error enabling MSI. rc = %d\n", rc);
+		dev_info(&pdev->dev, "Error enabling MSI. rc = %d\n", rc);
 		return rc;
 	}
 
@@ -339,7 +339,7 @@ static int mic_setup_msi(struct mic_device *mdev, struct pci_dev *pdev)
 		goto err_irq_req_fail;
 	}
 
-	dev_dbg(&pdev->dev, "%d MSI irqs setup\n", mdev->irq_info.num_vectors);
+	dev_info(&pdev->dev, "%d MSI irqs setup\n", mdev->irq_info.num_vectors);
 	return 0;
 err_irq_req_fail:
 	mic_release_callbacks(mdev);
@@ -376,7 +376,7 @@ static int mic_setup_intx(struct mic_device *mdev, struct pci_dev *pdev)
 	if (rc)
 		goto err;
 
-	dev_dbg(&pdev->dev, "intx irq setup\n");
+	dev_info(&pdev->dev, "intx irq setup\n");
 	return 0;
 err:
 	mic_release_callbacks(mdev);
@@ -467,7 +467,7 @@ mic_request_threaded_irq(struct mic_device *mdev,
 		rc = request_threaded_irq(msix->vector, handler, thread_fn,
 					  0, name, data);
 		if (rc) {
-			dev_dbg(mdev->sdev->parent,
+			dev_info(mdev->sdev->parent,
 				"request irq failed rc = %d\n", rc);
 			goto err;
 		}
@@ -476,7 +476,7 @@ mic_request_threaded_irq(struct mic_device *mdev,
 		mdev->intr_ops->program_msi_to_src_map(mdev,
 				entry, offset, true);
 		cookie = MK_COOKIE(entry, offset);
-		dev_dbg(mdev->sdev->parent, "irq: %d assigned for src: %d\n",
+		dev_info(mdev->sdev->parent, "irq: %d assigned for src: %d\n",
 			msix->vector, intr_src);
 	} else {
 		intr_cb = mic_register_intr_callback(mdev, offset, handler,
@@ -495,7 +495,7 @@ mic_request_threaded_irq(struct mic_device *mdev,
 				entry, offset, true);
 		}
 		cookie = MK_COOKIE(entry, intr_cb->cb_id);
-		dev_dbg(mdev->sdev->parent, "callback %d registered for src: %d\n",
+		dev_info(mdev->sdev->parent, "callback %d registered for src: %d\n",
 			intr_cb->cb_id, intr_src);
 	}
 	return (struct mic_irq *)cookie;
@@ -539,7 +539,7 @@ void mic_free_irq(struct mic_device *mdev,
 		mdev->intr_ops->program_msi_to_src_map(mdev,
 			entry, offset, false);
 
-		dev_dbg(mdev->sdev->parent, "irq: %d freed\n", irq);
+		dev_info(mdev->sdev->parent, "irq: %d freed\n", irq);
 	} else {
 		irq = pdev->irq;
 		src_id = mic_unregister_intr_callback(mdev, offset);
@@ -552,7 +552,7 @@ void mic_free_irq(struct mic_device *mdev,
 			mdev->intr_ops->program_msi_to_src_map(mdev,
 				entry, src_id, false);
 		}
-		dev_dbg(mdev->sdev->parent, "callback %d unregistered for src: %d\n",
+		dev_info(mdev->sdev->parent, "callback %d unregistered for src: %d\n",
 			offset, src_id);
 	}
 }

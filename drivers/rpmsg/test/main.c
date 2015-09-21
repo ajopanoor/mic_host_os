@@ -16,6 +16,7 @@
 #include "rpmsg_client_ioctl.h"
 
 #define DEV_NAME	"/dev/crpmsg"
+#define PAGE_SIZE	(4096)
 #define PMAX		80
 #define TEST_INPUT_OPTS		"c:t:n:s:r:e:d:w:z:h"
 
@@ -24,11 +25,11 @@ char path[PMAX];
 
 static void __dump_args(struct rpmsg_test_args *targs)
 {
-	printf("args: c=%d, t=%d, n=%d, s=%d, r=%d, e=%d d=%d w=%d flags=%x\n",
+	printf("args: c=%d, t=%d, n=%d, s=%d, r=%d, e=%d d=%d w=%d v=%d flags=%x\n",
 			targs->remote_cpu, targs->type,
 			targs->num_runs, targs->sbuf_size,
 			targs->rbuf_size, targs->src_ept,
-		        targs->dst_ept, targs->wait, targs->flags);
+		        targs->dst_ept, targs->wait, targs->verbose, targs->flags);
 }
 
 static void __validate_all_args(struct rpmsg_test_args *targs)
@@ -44,7 +45,8 @@ static void __print_usage(void)
 	fprintf(stderr, "Usage:-\n"
 			"rpmsg_client [-c cpu] [-t type] [-n num_runs]\n"
 			"\t\t [-s send_size] [-r recv_size] [-e src_ept]\n"
-			"\t\t [-d dst_ept] [-w wait] [-z zero-copy]\n");
+			"\t\t [-d dst_ept] [-w wait] [-z zero-copy]\n"
+			"\t\t [-v verbose (0/1/2)]\n");
 
 	fprintf(stderr, "Test Types:-"
 			"\n\t(1) RPMSG Ping"
@@ -67,6 +69,7 @@ static struct rpmsg_test_args *__get_args(int argc, char *argv[])
 	targs->num_runs = 1;
 	targs->wait = 0;
 	targs->flags = 0;
+	targs->verbose = 0;
 
 	while((opt = getopt(argc, argv, TEST_INPUT_OPTS)) != -1) {
 		switch (opt) {
@@ -97,6 +100,9 @@ static struct rpmsg_test_args *__get_args(int argc, char *argv[])
 			case 'z':
 				zero_copy = atoi(optarg);
 				break;
+			case 'v':
+				targs->verbose = atoi(optarg);
+				break;
 			case '?':
 			case 'h':
 			default:
@@ -108,6 +114,9 @@ static struct rpmsg_test_args *__get_args(int argc, char *argv[])
 
 	if (zero_copy != 0)
 		targs->flags |= O_SYNC;
+
+	if (targs->src_ept == 0xdac)
+		targs->rbuf_size += 16;	// FIXME, sizeof(struct rpmsg_hdr)
 
 	return targs;
 }
@@ -130,15 +139,11 @@ void __add_payload(int *buf, int len, bool r)
 	val++;
 }
 
-void __dump_buf(int *buf, int len)
+static void inline __dump_buf(int *buf, int len)
 {
-	int i, times, t = len/sizeof(int);
-	times = t < 8 ? t : 8;
-
-	for(i=0; i < times; i+=4) {
-		printf("0x%04x: %04d %04d %04d %04d \n",&buf[i], buf[i], buf[i+1],
-				buf[i+2], buf[i+3]);
-	}
+	printf("0x%04x: %04d %04d %04d %04d %04d %04d %04d %04d\n",
+			&buf[0], buf[0], buf[1], buf[2], buf[3], buf[4],
+			buf[5], buf[6], buf[7]);
 }
 
 int rpmsg_cfg_dev(int fd, struct rpmsg_test_args *targs)
@@ -214,11 +219,21 @@ err:
 static void rpmsg_recv(struct rpmsg_test_args *targs)
 {
 	void *rbuf = NULL;
-	int i, fd;
+	int i, fd, rbuf_size, num_runs, rio, ret, recv_size;
 
 	assert(targs->rbuf_size);
 
-	rbuf = malloc(targs->rbuf_size);
+	if(targs->rbuf_size > PAGE_SIZE) {
+		rbuf_size = PAGE_SIZE;
+		rio = targs->rbuf_size / PAGE_SIZE;
+		rio += (targs->rbuf_size % PAGE_SIZE) ? 1 : 0;
+		num_runs = rio * targs->num_runs;
+	} else {
+		rbuf_size = targs->rbuf_size;
+		num_runs = targs->num_runs;
+	}
+
+	rbuf = malloc(rbuf_size);
 	if(!rbuf) {
 		printf("malloc failed %s %s\n", path, strerror(errno));
 		return;
@@ -232,15 +247,22 @@ static void rpmsg_recv(struct rpmsg_test_args *targs)
 		return;
 	}
 
-
-	for(i = 0; i < targs->num_runs; i++) {
-		if (read(fd, rbuf, targs->rbuf_size) < 0){
+	for(i = 0; i < num_runs; i++) {
+		ret = read(fd, rbuf, rbuf_size);
+		if (ret < 0){
 			printf("Could not read from %s %s\n", path,
 					strerror(errno));
 			goto err;
 		}
-		__dump_buf(rbuf, targs->rbuf_size);
+		recv_size += ret;
+		if(targs->verbose == 2)
+			__dump_buf(rbuf, rbuf_size);
 	}
+
+	printf("Recv Statistics: \n"
+		"\tNumber of runs %4d\n"
+		"\tReceived bytes %4d\n"
+		"\tLocal endpoint %4d\n", num_runs, recv_size, targs->src_ept);
 err:
 	free(rbuf);
 	close(fd);
