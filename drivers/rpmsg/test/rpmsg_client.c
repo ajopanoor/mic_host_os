@@ -70,6 +70,7 @@ struct rpmsg_client_vdev *rpmsg_init_rvdev(struct rpmsg_client_device *rcdev)
 	INIT_LIST_HEAD(&rvdev->rvq.recvqueue);
 	init_waitqueue_head(&rvdev->rvq.recv_wait);
 	spin_lock_init(&rvdev->rvq.recv_spinlock);
+	INIT_STATS();
 
 	return rvdev;
 }
@@ -239,6 +240,10 @@ rpmsg_read(struct file *f, char __user *buf, size_t count, loff_t *ppos)
 		__kfree(rblk);
 		return -EFAULT;
 	}
+
+	LOG_TIME(recv_end_time);
+	UPDATE_ROUND_TRIP(recv_start_time, recv_end_time);
+
 	copied = rblk->len;
 	__kfree(rblk);
 
@@ -378,6 +383,10 @@ void rpmsg_client_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	dev_dbg(&rpdev->dev, "%s: %d bytes from 0x%x [%4d]",__func__, len,
 						src, ((int *)data)[0]);
 
+	LOG_TIME(recv_start_time);
+	nrecv++;
+	brecv += len;
+
 	rblk = kmalloc(sizeof(*rblk), GFP_ATOMIC);
 	if (!rblk) {
 		dev_err(&rpdev->dev, "kmalloc failed!\n");
@@ -404,6 +413,9 @@ void rpmsg_ept_cb(struct rpmsg_channel *rpdev, void *data, int len,
 
 	dev_dbg(&rpdev->dev, "%s: %d bytes from 0x%x [%4d]",__func__, len,
 						src, ((int *)data)[0]);
+	LOG_TIME(recv_start_time);
+	nrecv++;
+	brecv += len;
 
 	rblk = kmalloc(sizeof(*rblk), GFP_ATOMIC);
 	if (!rblk) {
@@ -530,8 +542,12 @@ void rpmsg_iov_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	size_t count;
 	int ret;
 
+	LOG_TIME(recv_start_time);
+
 	BUG_ON(!dinfo);
 	BUG_ON(!rvdev);
+
+	nrecv++;
 
 	ret = __vringh_copy(mdev, riov, dinfo, dinfo->len, &count);
 	if(ret)
@@ -539,6 +555,8 @@ void rpmsg_iov_cb(struct rpmsg_channel *rpdev, void *data, int len,
 
 	dev_dbg(&rpdev->dev, "%s: DMA %zu bytes of %d sized buffer from "
 			"0x%x", __func__, count, len, src);
+
+	brecv += count;
 }
 
 void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
@@ -550,8 +568,7 @@ void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	dma_addr_t src_addr = (dma_addr_t)data;
 	int err;
 
-	dev_dbg(&rpdev->dev, "%s: %d bytes from 0x%x data 0x%x",__func__, len,
-			src, data);
+	LOG_TIME(recv_start_time);
 
 	rblk = __get_rblk();
 
@@ -573,6 +590,9 @@ void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	} else
 		dev_dbg(&rpdev->dev, "%s: DMAed %u bytes from 0x%x", __func__,
 				len, src);
+
+	nrecv++;
+	brecv += len;
 
 	rpmsg_queue(rblk, &rvdev->rvq.recvqueue);
 	wake_up_interruptible(&rvdev->rvq.recv_wait);
@@ -627,6 +647,26 @@ static void rpmsg_cfg_client_dev(struct rpmsg_client_vdev *rvdev, unsigned long 
 	kfree(__ktargs);
 }
 
+static int rpmsg_read_vdev_stats(struct rpmsg_client_vdev *rvdev,
+		unsigned long arg)
+{
+	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
+	int size = sizeof(struct rpmsg_client_stats);
+	char __user *buf = (char __user *)arg;
+	int ret = 0;
+
+	ret = access_ok(VERIFY_WRITE, buf, size);
+	if (ret < 0) {
+		dev_err(&rpdev->dev, "access_ok failed %s %d", __func__, ret);
+		return ret;
+	}
+	ret = copy_to_user(buf, &rvdev->gstats, size);
+	if (ret < 0)
+		dev_err(&rpdev->dev, "failed to copy rpmsg_client_stats\n");
+
+	return ret;
+}
+
 static inline rpmsg_rx_cb_t __get_cb(struct rpmsg_client_device *rcdev, u32 addr)
 {
 	rpmsg_rx_cb_t cb;
@@ -666,6 +706,7 @@ static void create_ept(struct rpmsg_client_vdev *rvdev, unsigned long arg)
 
 	rvdev->src = addr;
 	rvdev->ept = ept;
+
 }
 
 static void delete_ept(struct rpmsg_client_vdev *rvdev, unsigned long arg)
@@ -685,7 +726,7 @@ long rpmsg_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	struct rpmsg_client_vdev *rvdev = f->private_data;
 	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
 	struct rpmsg_test_args *__ktargs = NULL;
-	int ret, done;
+	int ret = 0, done;
 
 	switch (cmd) {
 		case RPMSG_PING_IOCTL:
@@ -740,12 +781,18 @@ long rpmsg_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			rpmsg_cfg_client_dev(rvdev, arg);
 			break;
 		}
+		case RPMSG_READ_STATS_IOCTL:
+		{
+			ret = rpmsg_read_vdev_stats(rvdev, arg);
+			break;
+		}
+
 		default:
 			printk(KERN_INFO "%s cmd: %d ioctl failed\n", __func__,
 					 cmd);
 			return -ENOIOCTLCMD;
 	}
-	return 0;
+	return ret;
 }
 
 static const struct file_operations rpmsg_client_fops = {

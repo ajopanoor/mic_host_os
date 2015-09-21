@@ -13,6 +13,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <stdint.h>
+#include <string.h>
 #include "rpmsg_client_ioctl.h"
 
 #define DEV_NAME	"/dev/crpmsg"
@@ -21,7 +23,6 @@
 #define TEST_INPUT_OPTS		"c:t:n:s:r:e:d:w:z:h"
 
 char path[PMAX];
-
 
 static void __dump_args(struct rpmsg_test_args *targs)
 {
@@ -216,12 +217,26 @@ err:
 	close(fd);
 }
 
+static int rpmsg_read_dev_stats(int fd, struct rpmsg_client_stats *stats)
+{
+	int ret = 0;
+
+	ret = ioctl(fd, RPMSG_READ_STATS_IOCTL, (void *)stats);
+	if (ret < 0)
+		printf(" IOCTL failed %s %s\n", path, strerror(errno));
+
+	return ret;
+}
+
 static void rpmsg_recv(struct rpmsg_test_args *targs)
 {
 	void *rbuf = NULL;
 	int i, fd, rbuf_size, num_runs, rio, ret, recv_size;
+	struct rpmsg_client_stats gstats;
 
 	assert(targs->rbuf_size);
+
+	INIT_STATS();
 
 	if(targs->rbuf_size > PAGE_SIZE) {
 		rbuf_size = PAGE_SIZE;
@@ -246,7 +261,6 @@ static void rpmsg_recv(struct rpmsg_test_args *targs)
 		printf("ioctl failed %s %s\n", path, strerror(errno));
 		return;
 	}
-
 	for(i = 0; i < num_runs; i++) {
 		ret = read(fd, rbuf, rbuf_size);
 		if (ret < 0){
@@ -259,10 +273,14 @@ static void rpmsg_recv(struct rpmsg_test_args *targs)
 			__dump_buf(rbuf, rbuf_size);
 	}
 
-	printf("Recv Statistics: \n"
-		"\tNumber of runs %4d\n"
-		"\tReceived bytes %4d\n"
-		"\tLocal endpoint %4d\n", num_runs, recv_size, targs->src_ept);
+	ret = ioctl(fd, RPMSG_READ_STATS_IOCTL, (void *)&gstats);
+	if(ret < 0) {
+		printf("RPMSG_READ_STATS_IOCTL failed %s %s\n", path,
+				strerror(errno));
+		goto err;
+	}
+
+	PRINT_TEST_SUMMARY();
 err:
 	free(rbuf);
 	close(fd);
