@@ -37,8 +37,6 @@ static void __validate_all_args(struct rpmsg_test_args *targs)
 {
 	__dump_args(targs);
 	assert(!(targs->type == -1));
-	assert(!(targs->sbuf_size == 0));
-	assert(!(targs->rbuf_size == 0));
 }
 
 static void __print_usage(void)
@@ -50,9 +48,10 @@ static void __print_usage(void)
 			"\t\t [-v verbose (0/1/2)]\n");
 
 	fprintf(stderr, "Test Types:-"
-			"\n\t(1) RPMSG Ping"
-			"\n\t(2) RPMSG Send"
-			"\n\t(3) RPMSG Recv\n");
+			"\n\t(1) RPMSG Ping Recv"
+			"\n\t(2) RPMSG Ping Send"
+			"\n\t(3) RPMSG Send"
+			"\n\t(4) RPMSG Recv\n");
 }
 
 static struct rpmsg_test_args *__get_args(int argc, char *argv[])
@@ -63,14 +62,10 @@ static struct rpmsg_test_args *__get_args(int argc, char *argv[])
 	int opt;
 
 	targs = malloc(sizeof(*targs));
+	memset(targs, 0, sizeof(*targs));
 	targs->remote_cpu = -1;
 	targs->type = -1;
-	targs->src_ept = 0;
-	targs->dst_ept = 0;
 	targs->num_runs = 1;
-	targs->wait = 0;
-	targs->flags = 0;
-	targs->verbose = 0;
 
 	while((opt = getopt(argc, argv, TEST_INPUT_OPTS)) != -1) {
 		switch (opt) {
@@ -115,9 +110,6 @@ static struct rpmsg_test_args *__get_args(int argc, char *argv[])
 
 	if (zero_copy != 0)
 		targs->flags |= O_SYNC;
-
-	if (targs->src_ept == 0xdac)
-		targs->rbuf_size += 16;	// FIXME, sizeof(struct rpmsg_hdr)
 
 	return targs;
 }
@@ -231,8 +223,8 @@ static int rpmsg_read_dev_stats(int fd, struct rpmsg_client_stats *stats)
 static void rpmsg_recv(struct rpmsg_test_args *targs)
 {
 	void *rbuf = NULL;
-	int i, fd, rbuf_size, num_runs, rio, ret, recv_size;
 	struct rpmsg_client_stats gstats;
+	int i, fd, rbuf_size, num_runs, rio, ret, recv_size;
 
 	assert(targs->rbuf_size);
 
@@ -291,8 +283,11 @@ static void rpmsg_ping(struct rpmsg_test_args *targs)
 {
 	int fd, ret, id = 0;
 	unsigned int addr = targs->src_ept;
+	struct rpmsg_client_stats gstats;
 
 	__validate_all_args(targs);
+
+	INIT_STATS();
 
 	if((fd = open_crpmsg_dev(targs)) < 0)
 		return;
@@ -303,14 +298,12 @@ static void rpmsg_ping(struct rpmsg_test_args *targs)
 		return;
 	}
 
-	if(targs->wait) while(1);
+	ret = ioctl(fd, RPMSG_READ_STATS_IOCTL, (void *)&gstats);
+	if(ret < 0)
+		printf("RPMSG_READ_STATS_IOCTL failed %s %s\n", path,
+				strerror(errno));
 
-	ret = ioctl(fd, RPMSG_DESTROY_EPT_IOCTL, addr);
-	if (ret < 0) {
-		printf(" IOCTL failed %s %s\n", path, strerror(errno));
-		return;
-	}
-
+	PRINT_TEST_SUMMARY();
 	close(fd);
 }
 
@@ -321,7 +314,12 @@ int main(int argc, char *argv[])
 	targs = __get_args(argc, argv);
 
 	switch(targs->type) {
-		case RPMSG_PING:
+		case RPMSG_PING_RECV:
+			assert(!(targs->rbuf_size == 0));
+			rpmsg_ping(targs);
+			break;
+		case RPMSG_PING_SEND:
+			assert(!(targs->sbuf_size == 0));
 			rpmsg_ping(targs);
 			break;
 		case RPMSG_SEND:

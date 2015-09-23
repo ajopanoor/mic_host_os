@@ -10,7 +10,8 @@
 
 enum __rpmsg_test_types {
 	RPMSG_NULL_TEST,
-	RPMSG_PING,
+	RPMSG_PING_RECV,
+	RPMSG_PING_SEND,
 	RPMSG_SEND,
 	RPMSG_RECV,
 	RPMSG_MAX_TEST
@@ -21,12 +22,15 @@ struct rpmsg_test_args {
 	int remote_cpu;
 	int type;
 	int num_runs;
-	int sbuf_size;
-	int rbuf_size;
+	size_t sbuf_size;
+	size_t rbuf_size;
 	int verbose;
 	unsigned int src_ept;
 	unsigned int dst_ept;
 	int wait;
+	void *sbuf;
+	void *rbuf;
+	int ping_done;
 };
 
 #define MAX_TEST_STATE		3
@@ -50,6 +54,7 @@ struct rpmsg_client_stats {
 };
 
 #ifdef __KERNEL__
+#define RPMSG_KTIME		1
 #define G (*(struct rpmsg_client_stats*)&rvdev->gstats)
 #define __print		printk
 #else
@@ -73,7 +78,6 @@ struct rpmsg_client_stats {
 #define test_start_time (G.timestamps[2].start_time)
 #define test_end_time	(G.timestamps[2].end_time)
 
-//#define RPMSG_KTIME		1
 
 #define INIT_STATS()	do {	\
 	memset(&G, 0, sizeof(struct rpmsg_client_stats));	\
@@ -101,9 +105,7 @@ struct rpmsg_client_stats {
 } while(0)
 
 #define UPDATE_ROUND_TRIP(p, q)	do {			\
-	unsigned long t;				\
-	t = triptime = ((q) - (p));			\
-	triptime = triptime/1000;			\
+	triptime = ((q) - (p));				\
 	tsum += triptime;				\
 	if(triptime < tmin)				\
 		tmin = triptime;			\
@@ -117,15 +119,15 @@ typedef unsigned int u32;
 	totalbytes = bsend + brecv;			\
 	__print("\n--- rpmsg test statistics ---\n"	\
 			"%u packets transmitted, "	\
-			"%u packets received, "	\
+			"%u packets received, "		\
 			"%lu bytes transfered, "	\
-			"%lu bytes/ms. \n",		\
+			"%lu bytes/micro sec. \n",	\
 			nsend, nrecv, totalbytes,	\
-			(totalbytes / tsum));		\
+			(totalbytes)/(tsum/1000));	\
 	if (tmin != UINT_MAX) {				\
 		tavg = tsum / nrecv;			\
 		__print("round-trip min/avg/max = "	\
-			"%u.%03u/%u.%03u/%u.%03u ms\n",	\
+			"%u.%03u/%u.%03u/%u.%03u us\n",	\
 		(u32)tmin / 1000, (u32)tmin % 1000,	\
 		(u32)tavg / 1000, (u32)tavg % 1000,	\
 		(u32)tmax / 1000, (u32)tmax % 1000);	\

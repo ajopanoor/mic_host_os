@@ -164,7 +164,7 @@ void rpmsg_client_ping(struct rpmsg_client_vdev *rvdev,
 	LOG_TIME(send_start_time);
 
 	switch (rpt->type) {
-		case RPMSG_PING:
+		case RPMSG_PING_SEND:
 			rpt->cb = rpmsg_client_ping_work;
 			ret = rpmsg_send_offchannel(rpdev, rvdev->src,
 					LOOP_ADDR, rpt->sbuf, rpt->slen);

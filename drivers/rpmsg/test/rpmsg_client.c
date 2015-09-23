@@ -27,6 +27,7 @@
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/vringh.h>
+#include <linux/vmalloc.h>
 #include "rpmsg_client_ioctl.h"
 #include "rpmsg_client.h"
 #include "../../misc/mic/host/mic_device.h"
@@ -35,8 +36,6 @@
 #define RPMSG_CLIENT_MAX_NUM_DEVS		256
 #define RPMSG_CLIENT_DEV			"crpmsg"
 #define MAX_DMA_RBLK_CNT			128
-#define RPMSG_DMA				1
-#define RPMSG_IOV_DMA				0
 #define DMA_BUF_SIZE				PAGE_ALIGN(64 * 1024ULL)
 
 /* Driver name */
@@ -129,7 +128,30 @@ static inline struct rpmsg_recv_blk* __get_rblk(void)
 	return rblk;
 }
 
-static inline void __free_rblks(void)
+static inline struct rpmsg_recv_blk* rpmsg_dequeue(struct list_head *queue)
+{
+	struct recv_queue *rvq;
+	struct rpmsg_client_vdev *rvdev;
+	struct rpmsg_recv_blk *rblk = NULL;
+	unsigned long flags;
+
+	rvq = container_of(queue, struct recv_queue, recvqueue);
+	rvdev = container_of(rvq, struct rpmsg_client_vdev, rvq);
+	rcdev = rvdev->rcdev;
+
+	BUG_ON(!rcdev);
+
+	spin_lock_irqsave(&rvq->recv_spinlock, flags);
+	if(!list_empty(&rvq->recvqueue)) {
+			rblk = list_first_entry(&rvq->recvqueue,
+					struct rpmsg_recv_blk, vlink);
+			list_del(&rblk->vlink);
+	}
+	spin_unlock_irqrestore(&rvq->recv_spinlock, flags);
+	return rblk;
+}
+
+static inline void free_rblks(void)
 {
 	struct rpmsg_recv_blk *rblk = NULL;
 	while((rblk = __get_rblk())) {
@@ -158,34 +180,11 @@ static int __alloc_dma_rblk_pool(struct dma_buf_info *dinfo, int count,
 
 	return 0;
 enomem:
-	__free_rblks();
+	free_rblks();
 	return -ENOMEM;
 }
 
-static inline struct rpmsg_recv_blk* rpmsg_dequeue(struct list_head *queue)
-{
-	struct recv_queue *rvq;
-	struct rpmsg_client_vdev *rvdev;
-	struct rpmsg_recv_blk *rblk = NULL;
-	unsigned long flags;
-
-	rvq = container_of(queue, struct recv_queue, recvqueue);
-	rvdev = container_of(rvq, struct rpmsg_client_vdev, rvq);
-	rcdev = rvdev->rcdev;
-
-	BUG_ON(!rcdev);
-
-	spin_lock_irqsave(&rvq->recv_spinlock, flags);
-	if(!list_empty(&rvq->recvqueue)) {
-			rblk = list_first_entry(&rvq->recvqueue,
-					struct rpmsg_recv_blk, vlink);
-			list_del(&rblk->vlink);
-	}
-	spin_unlock_irqrestore(&rvq->recv_spinlock, flags);
-	return rblk;
-}
-
-static inline void __kfree(struct rpmsg_recv_blk *rblk)
+static inline void __free_rblk(struct rpmsg_recv_blk *rblk)
 {
 	BUG_ON(!rblk);
 
@@ -200,11 +199,40 @@ static void rpmsg_free_rvdev(struct rpmsg_client_vdev *rvdev)
 	struct recv_queue *rvq = &rvdev->rvq;
 	struct rpmsg_recv_blk *rblk;
 
-	while(rblk = rpmsg_dequeue(rvq)) {
-		__kfree(rblk);
+	while((rblk = rpmsg_dequeue(rvq))) {
+		__free_rblk(rblk);
 	}
 	return;
 }
+
+int rpmsg_release(struct inode *inode, struct file *f)
+{
+	struct rpmsg_client_vdev *rvdev = f->private_data;
+
+	rpmsg_free_rvdev(rvdev);
+
+	if(rvdev->ept)
+		rpmsg_destroy_ept(rvdev->ept);
+
+	f->private_data = NULL;
+
+	return 0;
+}
+
+#define __COPY_TO_USER__(buf, rblk)				\
+({								\
+ 	int __len, __ret;					\
+ 	char *__data;						\
+	if (rblk->flags & RPMSG_DMA_BUF) {			\
+ 		__data = rblk->data + sizeof(struct rpmsg_hdr);	\
+ 		__len = rblk->len - sizeof(struct rpmsg_hdr);	\
+	} else {						\
+ 		__data = rblk->data;				\
+		__len = rblk->len;				\
+	}							\
+	__ret = copy_to_user(buf, __data, __len);		\
+ 	__ret;							\
+})
 
 static ssize_t
 rpmsg_read(struct file *f, char __user *buf, size_t count, loff_t *ppos)
@@ -231,21 +259,20 @@ rpmsg_read(struct file *f, char __user *buf, size_t count, loff_t *ppos)
 	if(rblk->len > count) {
 		dev_err(&rpdev->dev, "%s: packet too big %d > %zu\n",__func__,
 							rblk->len, count);
-		__kfree(rblk);
+		__free_rblk(rblk);
 		return -EMSGSIZE;
 	}
-	if(copy_to_user(buf, rblk->data, rblk->len)){
+
+	ret = __COPY_TO_USER__(buf, rblk);
+	if(ret < 0){
 		dev_err(&rpdev->dev, "%s: failed to copy usr=%p ker=%p\n",
 						__func__, buf, rblk->data);
-		__kfree(rblk);
+		__free_rblk(rblk);
 		return -EFAULT;
 	}
 
-	LOG_TIME(recv_end_time);
-	UPDATE_ROUND_TRIP(recv_start_time, recv_end_time);
-
 	copied = rblk->len;
-	__kfree(rblk);
+	__free_rblk(rblk);
 
 	return copied;
 }
@@ -314,9 +341,8 @@ static void __zcopy_free_buf(struct rpmsg_channel *rpdev, void *data, int len,
 }
 
 static ssize_t
-rpmsg_write(struct file *f, const char __user *buf, size_t count, loff_t *ppos)
+__rpmsg_write(struct rpmsg_client_vdev *rvdev, const char __user *buf, size_t count)
 {
-	struct rpmsg_client_vdev *rvdev = f->private_data;
 	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
 	int buf_0 = ((int __user *)buf)[0];
 	struct dma_buf_info *sbuf = NULL;
@@ -325,6 +351,7 @@ rpmsg_write(struct file *f, const char __user *buf, size_t count, loff_t *ppos)
 	if (count > DMA_BUF_SIZE)
 		return 0;
 
+	LOG_TIME(send_start_time);
 	if (rvdev->flags & (O_NONBLOCK|~O_SYNC)) {
 		ret = rpmsg_trysend_offchannel(rpdev, rvdev->src, rvdev->dst,
 				(void *)buf, (int)count);
@@ -350,28 +377,34 @@ rpmsg_write(struct file *f, const char __user *buf, size_t count, loff_t *ppos)
 				(void *)buf, (int)count);
 	}
 
-write_fail:
 	if(ret < 0)
-		return 0;
+		goto write_fail;
+
+	LOG_TIME(send_end_time);
+
+	nsend++;
+	bsend += count;
 
 	dev_dbg(&rpdev->dev,"%s Flag %x Tx Buf[0] %d \n", __func__,
 			rvdev->flags, buf_0);
+
 	return count;
 
+write_fail:
+	dev_err(&rpdev->dev,"%s Flag %x Tx Buf[0] %d \n", __func__,
+			rvdev->flags, buf_0);
+	return 0;
 }
 
-int rpmsg_release(struct inode *inode, struct file *f)
+static ssize_t
+rpmsg_write(struct file *f, const char __user *buf, size_t count, loff_t *ppos)
 {
 	struct rpmsg_client_vdev *rvdev = f->private_data;
 
-	rpmsg_free_rvdev(rvdev);
+	if (count > DMA_BUF_SIZE)
+		return 0;
 
-	if(rvdev->ept)
-		rpmsg_destroy_ept(rvdev->ept);
-
-	f->private_data = NULL;
-
-	return 0;
+	return __rpmsg_write(rvdev, buf, count);
 }
 
 void rpmsg_client_cb(struct rpmsg_channel *rpdev, void *data, int len,
@@ -380,9 +413,6 @@ void rpmsg_client_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	struct rpmsg_recv_blk *rblk;
 	struct rpmsg_client_vdev *rvdev = priv;
 
-	dev_dbg(&rpdev->dev, "%s: %d bytes from 0x%x [%4d]",__func__, len,
-						src, ((int *)data)[0]);
-
 	LOG_TIME(recv_start_time);
 	nrecv++;
 	brecv += len;
@@ -401,8 +431,12 @@ void rpmsg_client_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	rblk->flags &= ~RPMSG_DMA_BUF;
 	rblk->data = data;
 
-	rpmsg_queue(rblk, &rvdev->rvq.recvqueue);
-	wake_up_interruptible(&rvdev->rvq.recv_wait);
+	LOG_TIME(recv_end_time);
+	UPDATE_ROUND_TRIP(recv_start_time, recv_end_time);
+
+	dev_info(&rpdev->dev, "%s Received %d bytes from 0x%x\n",
+			__func__, len, src);
+	__free_rblk(rblk);
 }
 
 void rpmsg_ept_cb(struct rpmsg_channel *rpdev, void *data, int len,
@@ -411,11 +445,7 @@ void rpmsg_ept_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	struct rpmsg_recv_blk *rblk;
 	struct rpmsg_client_vdev *rvdev = priv;
 
-	dev_dbg(&rpdev->dev, "%s: %d bytes from 0x%x [%4d]",__func__, len,
-						src, ((int *)data)[0]);
 	LOG_TIME(recv_start_time);
-	nrecv++;
-	brecv += len;
 
 	rblk = kmalloc(sizeof(*rblk), GFP_ATOMIC);
 	if (!rblk) {
@@ -431,8 +461,20 @@ void rpmsg_ept_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	rblk->flags &= ~RPMSG_DMA_BUF;
 	rblk->data = data;
 
-	rpmsg_queue(rblk, &rvdev->rvq.recvqueue);
-	wake_up_interruptible(&rvdev->rvq.recv_wait);
+	dev_dbg(&rpdev->dev, "%s: %d bytes from 0x%x [%4d]",__func__, len,
+						src, ((int *)data)[0]);
+	if(rvdev->ping_cb) {
+		rvdev->ping_cb(rvdev, rblk->data, rblk->len, src);
+		__free_rblk(rblk);
+	} else {
+		rpmsg_queue(rblk, &rvdev->rvq.recvqueue);
+		wake_up_interruptible(&rvdev->rvq.recv_wait);
+	}
+
+	nrecv++;
+	brecv += len;
+	LOG_TIME(recv_end_time);
+	UPDATE_ROUND_TRIP(recv_start_time, recv_end_time);
 }
 
 static int __sync_dma(struct mic_device *mdev, dma_addr_t dst, dma_addr_t src,
@@ -491,7 +533,6 @@ static int __rpmsg_copy_to_user(struct mic_device *mdev, struct dma_buf_info *di
 		daddr += partlen;
 		dbuf += partlen;
 		len -= partlen;
-		dma_offset = 0;
 	}
 	return 0;
 err:
@@ -547,8 +588,6 @@ void rpmsg_iov_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	BUG_ON(!dinfo);
 	BUG_ON(!rvdev);
 
-	nrecv++;
-
 	ret = __vringh_copy(mdev, riov, dinfo, dinfo->len, &count);
 	if(ret)
 		dev_err(&rpdev->dev, "%s DMA failed\n",__func__);
@@ -556,7 +595,13 @@ void rpmsg_iov_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	dev_dbg(&rpdev->dev, "%s: DMA %zu bytes of %d sized buffer from "
 			"0x%x", __func__, count, len, src);
 
+	if(rvdev->ping_cb)
+		rvdev->ping_cb(rvdev, dinfo->va, count, src);
+
+	nrecv++;
 	brecv += count;
+	LOG_TIME(recv_end_time);
+	UPDATE_ROUND_TRIP(recv_start_time, recv_end_time);
 }
 
 void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
@@ -594,8 +639,16 @@ void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	nrecv++;
 	brecv += len;
 
-	rpmsg_queue(rblk, &rvdev->rvq.recvqueue);
-	wake_up_interruptible(&rvdev->rvq.recv_wait);
+	LOG_TIME(recv_end_time);
+	UPDATE_ROUND_TRIP(recv_start_time, recv_end_time);
+
+	if(rvdev->ping_cb) {
+		rvdev->ping_cb(rvdev, rblk->data, rblk->len, src);
+		__free_rblk(rblk);
+	} else {
+		rpmsg_queue(rblk, &rvdev->rvq.recvqueue);
+		wake_up_interruptible(&rvdev->rvq.recv_wait);
+	}
 }
 
 static int __copy_args_from_user(struct rpmsg_test_args **__ktargs, unsigned long arg)
@@ -610,7 +663,6 @@ static int __copy_args_from_user(struct rpmsg_test_args **__ktargs, unsigned lon
 		kfree(*__ktargs);
 		return -EINVAL;
 	}
-
 	return 0;
 }
 
@@ -623,18 +675,12 @@ static void __dump_args(struct rpmsg_test_args *targs)
 		        targs->dst_ept, targs->wait, targs->flags);
 }
 
-static void rpmsg_cfg_client_dev(struct rpmsg_client_vdev *rvdev, unsigned long arg)
+static void rpmsg_cfg_client_dev(struct rpmsg_client_vdev *rvdev,
+					struct rpmsg_test_args *__ktargs)
 {
 	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
-	struct rpmsg_test_args *__ktargs = NULL;
 	int ret;
 
-	ret = __copy_args_from_user(&__ktargs, arg);
-	if(ret) {
-		dev_err(&rpdev->dev, "%s __copy_args_from_user failed\n",
-				__func__);
-		return;
-	}
 	if (__ktargs->dst_ept && (__ktargs->dst_ept != rvdev->dst)) {
 		dev_info(&rpdev->dev, "%s cfg ept_dst %d\n", __func__,
 				__ktargs->dst_ept);
@@ -644,7 +690,6 @@ static void rpmsg_cfg_client_dev(struct rpmsg_client_vdev *rvdev, unsigned long 
 		dev_info(&rpdev->dev, "%s cfg zero-copy tx\n", __func__);
 		rvdev->flags |= O_SYNC;
 	}
-	kfree(__ktargs);
 }
 
 static int rpmsg_read_vdev_stats(struct rpmsg_client_vdev *rvdev,
@@ -706,7 +751,6 @@ static void create_ept(struct rpmsg_client_vdev *rvdev, unsigned long arg)
 
 	rvdev->src = addr;
 	rvdev->ept = ept;
-
 }
 
 static void delete_ept(struct rpmsg_client_vdev *rvdev, unsigned long arg)
@@ -721,49 +765,139 @@ static void delete_ept(struct rpmsg_client_vdev *rvdev, unsigned long arg)
 	rvdev->ept = NULL;
 }
 
+static void ping_tx_worker(struct rpmsg_client_vdev *rvdev, void *data, int len,
+		u32 src)
+{
+	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
+	struct rpmsg_test_args *kargs = rvdev->priv;
+	int seq, ret;
+
+	if (!kargs->num_runs) {
+		kargs->ping_done = 1;
+		wake_up_interruptible(&rvdev->client_wait);
+		return;
+	}
+
+	seq = ((u32 *)data)[0];
+	((int *)kargs->sbuf)[0] = ++seq;
+
+	dev_info(&rpdev->dev, "%s to %d seq [%d]\n", __func__, src, seq);
+
+	__rpmsg_write(rvdev, kargs->sbuf, kargs->sbuf_size);
+
+	kargs->num_runs--;
+}
+
+static void ping_rx_worker(struct rpmsg_client_vdev *rvdev, void *data, int len,
+		u32 src)
+{
+	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
+	struct rpmsg_test_args *kargs = rvdev->priv;
+	int seq, ret;
+
+	seq = ((int *)kargs->rbuf)[0] = ((u32 *)data)[0];
+
+	dev_info(&rpdev->dev, "%s to %d seq [%d]\n", __func__, src, seq);
+
+	__rpmsg_write(rvdev, kargs->rbuf, kargs->rbuf_size);
+
+	kargs->num_runs--;
+
+	if (!kargs->num_runs) {
+		kargs->ping_done = 1;
+		wake_up_interruptible(&rvdev->client_wait);
+		return;
+	}
+}
+
+static void rpmsg_ping(struct rpmsg_client_vdev *rvdev,
+		struct rpmsg_test_args *kargs)
+{
+	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
+	u32 *payload;
+	int seq = 0;
+
+
+	kargs->sbuf = vmalloc(kargs->sbuf_size);
+
+	payload = (u32 *) kargs->sbuf;
+	payload[0] = seq;
+
+	dev_info(&rpdev->dev, "%s to %d seq [%d]\n", __func__, rvdev->dst, seq);
+
+	__rpmsg_write(rvdev, kargs->sbuf, kargs->sbuf_size);
+
+	kargs->num_runs--;
+}
+
+static int rpmsg_ping_cfg(struct rpmsg_client_vdev *rvdev, unsigned long arg)
+{
+	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
+	struct rpmsg_test_args *kargs = NULL;
+	int ret = 0;
+
+	ret = __copy_args_from_user(&kargs, arg);
+	if(ret < 0) {
+		dev_err(&rpdev->dev, "copy from user failed \n");
+		return ret;
+	}
+
+	__dump_args(kargs);
+
+	BUG_ON(rvdev->ping_cb);
+	BUG_ON(kargs->ping_done);
+	BUG_ON(kargs->sbuf);
+	BUG_ON(kargs->rbuf);
+
+	rvdev->priv = kargs;
+	rpmsg_cfg_client_dev(rvdev, kargs);
+
+	init_waitqueue_head(&rvdev->client_wait);
+
+	switch (kargs->type) {
+		case RPMSG_PING_RECV:
+			kargs->rbuf = vmalloc(kargs->rbuf_size);
+			dev_info(&rpdev->dev, "RPMSG_PING_RECV\n");
+			rvdev->ping_cb = ping_rx_worker;
+			create_ept(rvdev, kargs->src_ept);
+			break;
+		case RPMSG_PING_SEND:
+			dev_info(&rpdev->dev, "RPMSG_PING_SEND\n");
+			rvdev->ping_cb = ping_tx_worker;
+			create_ept(rvdev, kargs->src_ept);
+			rpmsg_ping(rvdev, kargs);
+			break;
+	}
+
+	ret = wait_event_interruptible(rvdev->client_wait, (kargs->ping_done));
+	if (ret) {
+		dev_err(&rpdev->dev, "%s err\n", (kargs->type == 1) ?
+				"rpmsg_ping_recv": "rpmsg_ping_send");
+		goto cleanup;
+	}
+
+	dev_info(&rpdev->dev, "%s done\n", (kargs->type == 1) ?
+				"rpmsg_ping_recv": "rpmsg_ping_send");
+cleanup:
+	delete_ept(rvdev, kargs->src_ept);
+	if(kargs->sbuf) vfree(kargs->sbuf);
+	if(kargs->rbuf) vfree(kargs->rbuf);
+	rvdev->ping_cb = NULL;
+	kfree(kargs);
+	return ret;
+}
+
 long rpmsg_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
 	struct rpmsg_client_vdev *rvdev = f->private_data;
 	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
-	struct rpmsg_test_args *__ktargs = NULL;
-	int ret = 0, done;
+	struct rpmsg_test_args *kargs = NULL;
+	int ret = 0;
 
 	switch (cmd) {
 		case RPMSG_PING_IOCTL:
 		{
-			struct rpmsg_endpoint *ept;
-			unsigned int addr;
-			rpmsg_rx_cb_t cb = rpmsg_ping_cb;
-
-			ret = __copy_args_from_user(&__ktargs, arg);
-			if(ret < 0) {
-				dev_err(&rpdev->dev, "copy from user failed \n");
-				return ret;
-			}
-
-			addr = __ktargs->src_ept;
-
-			ept = rpmsg_create_ept(rpdev, cb, rvdev, addr);
-			if (!ept) {
-				dev_err(&rpdev->dev, "failed to create ept\n");
-				return -ENOMEM;
-			}
-
-			rvdev->src = addr;
-			rvdev->ept = ept;
-			ept->priv = rvdev;
-
-			init_waitqueue_head(&rvdev->client_wait);
-
-			rpmsg_client_ping(rvdev, __ktargs);
-			if(__ktargs->wait) {
-				ret = wait_event_interruptible(rvdev->client_wait,
-					(done = rpmsg_ping_status(rvdev)));
-				if (ret)
-					return ret;
-			}
-
-			kfree(__ktargs);
+			ret = rpmsg_ping_cfg(rvdev, arg);
 			break;
 		}
 		case RPMSG_CREATE_EPT_IOCTL:
@@ -778,7 +912,14 @@ long rpmsg_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		}
 		case RPMSG_CFG_DEV_IOCTL:
 		{
-			rpmsg_cfg_client_dev(rvdev, arg);
+			ret = __copy_args_from_user(&kargs, arg);
+			if(ret) {
+				dev_err(&rpdev->dev, "%s __copy_args_from_user"
+						"failed %d\n", __func__, ret);
+				return ret;
+			}
+			rpmsg_cfg_client_dev(rvdev, kargs);
+			kfree(kargs);
 			break;
 		}
 		case RPMSG_READ_STATS_IOCTL:
@@ -967,13 +1108,10 @@ static void __exit rpmsg_client_fini(void)
 {
 	struct rpmsg_channel *rpdev = rcdev->rpdev;
 
+	rpmsg_free_rvdev(rcdev->g_rvdev);
+
 	__dma_buf_free(rpdev, rcdev->dma_buf_pool);
 	__dma_buf_free(rpdev, rcdev->dma_buf_iov);
-
-	/*
-	 *  FIXME add code to clean-up the outstanding rblks
-	 *  rpmsg_dequeue(..)
-	 */
 
 	ida_simple_remove(&g_rpmsg_client_ida, rcdev->id);
 	cdev_del(&rcdev->cdev);

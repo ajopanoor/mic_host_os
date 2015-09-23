@@ -44,6 +44,7 @@ struct rpmsg_client_device {
 	struct dma_buf_info *dma_buf_iov;
 };
 
+typedef void (*rpmsg_ping_cb_t)(struct rpmsg_client_vdev *, void *, int, u32);
 struct rpmsg_client_vdev {
 	u32 src;
 	u32 dst;
@@ -53,6 +54,7 @@ struct rpmsg_client_vdev {
 	struct rpmsg_endpoint *ept;
 	struct recv_queue rvq;
 	wait_queue_head_t client_wait;
+	rpmsg_ping_cb_t ping_cb;
 	struct rpmsg_client_stats gstats;
 };
 
