@@ -49,7 +49,17 @@ struct rpmsg_client_stats {
 	unsigned long tmax;
 	unsigned long tavg;
 	unsigned long tsum;
-	unsigned long triptime;
+	unsigned long tx_rtt;
+	unsigned long rmin;
+	unsigned long rmax;
+	unsigned long ravg;
+	unsigned long rsum;
+	unsigned long rx_rtt;
+	unsigned long rtmin;
+	unsigned long rtmax;
+	unsigned long rtavg;
+	unsigned long rtsum;
+	unsigned long triptime;	// remove when cleaning up old ping code
 	struct rpmsg_client_timestamp timestamps[MAX_TEST_STATE];
 };
 
@@ -70,18 +80,29 @@ struct rpmsg_client_stats {
 #define tmax		(G.tmax)
 #define tavg		(G.tavg)
 #define tsum		(G.tsum)
+#define tx_rtt		(G.tx_rtt)
+#define rmin		(G.rmin)
+#define rmax		(G.rmax)
+#define ravg		(G.ravg)
+#define rsum		(G.rsum)
+#define rx_rtt		(G.rx_rtt)
+#define rtmin		(G.rtmin)
+#define rtmax		(G.rtmax)
+#define rtavg		(G.rtavg)
+#define rtsum		(G.rtsum)
 #define triptime	(G.triptime)
 #define send_start_time	(G.timestamps[0].start_time)
 #define send_end_time	(G.timestamps[0].end_time)
 #define recv_start_time (G.timestamps[1].start_time)
 #define recv_end_time	(G.timestamps[1].end_time)
-#define test_start_time (G.timestamps[2].start_time)
-#define test_end_time	(G.timestamps[2].end_time)
-
+#define ping_start_time (G.timestamps[2].start_time)
+#define ping_end_time	(G.timestamps[2].end_time)
 
 #define INIT_STATS()	do {	\
 	memset(&G, 0, sizeof(struct rpmsg_client_stats));	\
 	tmin = UINT_MAX;					\
+	rmin = UINT_MAX;					\
+	rtmin = UINT_MAX;					\
 } while(0)
 
 #ifdef	RPMSG_KTIME
@@ -104,33 +125,47 @@ struct rpmsg_client_stats {
 		tmax = triptime;			\
 } while(0)
 
-#define UPDATE_ROUND_TRIP(p, q)	do {			\
-	triptime = ((q) - (p));				\
-	tsum += triptime;				\
-	if(triptime < tmin)				\
-		tmin = triptime;			\
-	if(triptime > tmax)				\
-		tmax = triptime;			\
+#define UPDATE_RTT(p, q, sum, min, max, rtt) do {	\
+	(rtt) = ((q) - (p));				\
+	(sum) += (rtt);					\
+	if((rtt) < (min))				\
+		(min) = (rtt);				\
+	if((rtt) > (max))				\
+		(max) = (rtt);				\
 } while(0)
 
 typedef unsigned int u32;
 #define PRINT_TEST_SUMMARY()	do {			\
 	unsigned long totalbytes;			\
-	totalbytes = bsend + brecv;			\
-	__print("\n--- rpmsg test statistics ---\n"	\
+	totalbytes = (bsend + brecv);			\
+	__print("\n--- rpmsg statistics ---\n"		\
 			"%u packets transmitted, "	\
 			"%u packets received, "		\
-			"%lu bytes transfered, "	\
-			"%lu bytes/micro sec. \n",	\
-			nsend, nrecv, totalbytes,	\
-			(totalbytes)/(tsum/1000));	\
+			"%lu bytes transfered\n",	\
+			nsend, nrecv, totalbytes);	\
+	if (rmin != UINT_MAX) {				\
+		ravg = (rsum / nrecv);			\
+		__print("rx-time min/avg/max = "	\
+			"%u.%03u/%u.%03u/%u.%03u us\n",	\
+		(u32)rmin / 1000, (u32)rmin % 1000,	\
+		(u32)ravg / 1000, (u32)ravg % 1000,	\
+		(u32)rmax / 1000, (u32)rmax % 1000);	\
+	}						\
 	if (tmin != UINT_MAX) {				\
-		tavg = tsum / nrecv;			\
-		__print("round-trip min/avg/max = "	\
+		tavg = (tsum / nsend);			\
+		__print("tx-time min/avg/max = "	\
 			"%u.%03u/%u.%03u/%u.%03u us\n",	\
 		(u32)tmin / 1000, (u32)tmin % 1000,	\
 		(u32)tavg / 1000, (u32)tavg % 1000,	\
 		(u32)tmax / 1000, (u32)tmax % 1000);	\
+	}						\
+	if (rtmin != UINT_MAX) {			\
+		rtavg = (rtsum / (nsend + nrecv));	\
+		__print("round-trip-time min/avg/max = "\
+			"%u.%03u/%u.%03u/%u.%03u us\n",	\
+		(u32)rtmin / 1000, (u32)rtmin % 1000,	\
+		(u32)rtavg / 1000, (u32)rtavg % 1000,	\
+		(u32)rtmax / 1000, (u32)rtmax % 1000);	\
 	}						\
 } while(0)
 

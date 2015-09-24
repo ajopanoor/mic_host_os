@@ -221,7 +221,7 @@ int rpmsg_release(struct inode *inode, struct file *f)
 
 #define __COPY_TO_USER__(buf, rblk)				\
 ({								\
- 	int __len, __ret;					\
+ 	int  __ret;						\
  	char *__data;						\
 	if (rblk->flags & RPMSG_DMA_BUF) {			\
  		__data = rblk->data + sizeof(struct rpmsg_hdr);	\
@@ -242,7 +242,8 @@ rpmsg_read(struct file *f, char __user *buf, size_t count, loff_t *ppos)
 	struct rpmsg_channel *rpdev = rcdev->rpdev;
 	struct rpmsg_recv_blk *rblk;
 	struct recv_queue *rvq = &rvdev->rvq;
-	int ret, copied;
+	ssize_t __len;
+	int ret;
 
 	rblk = rpmsg_dequeue(&rvq->recvqueue);
 	if (!rblk) {
@@ -265,16 +266,15 @@ rpmsg_read(struct file *f, char __user *buf, size_t count, loff_t *ppos)
 
 	ret = __COPY_TO_USER__(buf, rblk);
 	if(ret < 0){
-		dev_err(&rpdev->dev, "%s: failed to copy usr=%p ker=%p\n",
-						__func__, buf, rblk->data);
+		dev_err(&rpdev->dev, "%s: copy_to_user failed u %p k %p"
+				" ret %d len %zu \n", __func__, buf, rblk->data,
+				ret, __len);
 		free_rblk(rblk);
 		return -EFAULT;
 	}
 
-	copied = rblk->len;
 	free_rblk(rblk);
-
-	return copied;
+	return __len;
 }
 
 static struct dma_buf_info * dma_buf_alloc(struct rpmsg_channel *rpdev, int len)
@@ -385,7 +385,7 @@ __rpmsg_write(struct rpmsg_client_vdev *rvdev, const char __user *buf, size_t co
 
 	nsend++;
 	bsend += count;
-
+	UPDATE_RTT(send_start_time, send_end_time, tsum, tmin, tmax, rx_rtt);
 	dev_dbg(&rpdev->dev,"%s Flag %x Tx Buf[0] %d \n", __func__,
 			rvdev->flags, buf_0);
 
@@ -430,7 +430,7 @@ void rpmsg_client_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	rblk->data = data;
 
 	LOG_TIME(recv_end_time);
-	UPDATE_ROUND_TRIP(recv_start_time, recv_end_time);
+	UPDATE_RTT(recv_start_time, recv_end_time, rsum, rmin, rmax, rx_rtt);
 
 	dev_info(&rpdev->dev, "%s Received %d bytes from 0x%x\n",
 			__func__, len, src);
@@ -472,7 +472,7 @@ void rpmsg_ept_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	nrecv++;
 	brecv += len;
 	LOG_TIME(recv_end_time);
-	UPDATE_ROUND_TRIP(recv_start_time, recv_end_time);
+	UPDATE_RTT(recv_start_time, recv_end_time, rsum, rmin, rmax, rx_rtt);
 }
 
 static int __sync_dma(struct mic_device *mdev, dma_addr_t dst, dma_addr_t src,
@@ -598,7 +598,7 @@ void rpmsg_iov_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	nrecv++;
 	brecv += count;
 	LOG_TIME(recv_end_time);
-	UPDATE_ROUND_TRIP(recv_start_time, recv_end_time);
+	UPDATE_RTT(recv_start_time, recv_end_time, rsum, rmin, rmax, rx_rtt);
 }
 
 void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
@@ -637,7 +637,7 @@ void rpmsg_dma_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	brecv += len;
 
 	LOG_TIME(recv_end_time);
-	UPDATE_ROUND_TRIP(recv_start_time, recv_end_time);
+	UPDATE_RTT(recv_start_time, recv_end_time, rsum, rmin, rmax, rx_rtt);
 
 	if(rvdev->ping_cb) {
 		rvdev->ping_cb(rvdev, rblk->data, rblk->len, src);
@@ -771,11 +771,16 @@ static void ping_tx_worker(struct rpmsg_client_vdev *rvdev, void *data, int len,
 	struct rpmsg_test_args *kargs = rvdev->priv;
 	int seq;
 
+	LOG_TIME(ping_end_time);
+	UPDATE_RTT(ping_start_time, ping_end_time, rtsum, rtmin, rtmax, triptime);
+
 	if (!kargs->num_runs) {
 		kargs->ping_done = 1;
 		wake_up_interruptible(&rvdev->client_wait);
 		return;
 	}
+
+	LOG_TIME(ping_start_time);
 
 	seq = ((u32 *)data)[0];
 	((int *)kargs->sbuf)[0] = ++seq;
@@ -794,6 +799,9 @@ static void ping_rx_worker(struct rpmsg_client_vdev *rvdev, void *data, int len,
 	struct rpmsg_test_args *kargs = rvdev->priv;
 	int seq;
 
+	LOG_TIME(ping_end_time);
+	UPDATE_RTT(ping_start_time, ping_end_time, rtsum, rtmin, rtmax, triptime);
+
 	seq = ((int *)kargs->rbuf)[0] = ((u32 *)data)[0];
 
 	dev_info(&rpdev->dev, "%s to %d seq [%d]\n", __func__, src, seq);
@@ -807,6 +815,7 @@ static void ping_rx_worker(struct rpmsg_client_vdev *rvdev, void *data, int len,
 		wake_up_interruptible(&rvdev->client_wait);
 		return;
 	}
+	LOG_TIME(ping_start_time);
 }
 
 static int rpmsg_ping_send(struct rpmsg_client_vdev *rvdev,
@@ -816,6 +825,7 @@ static int rpmsg_ping_send(struct rpmsg_client_vdev *rvdev,
 	u32 *payload;
 	int ret = 0, seq = 0;
 
+	LOG_TIME(ping_start_time);
 	kargs->sbuf = vmalloc(kargs->sbuf_size);
 	if (IS_ERR(kargs->sbuf)) {
 		ret = PTR_ERR(kargs->sbuf);
@@ -843,6 +853,8 @@ static int rpmsg_ping_recv(struct rpmsg_client_vdev *rvdev,
 {
 	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
 	int ret = 0;
+
+	LOG_TIME(ping_start_time);
 
 	kargs->rbuf = vmalloc(kargs->rbuf_size);
 	if (IS_ERR(kargs->rbuf)) {
