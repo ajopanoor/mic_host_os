@@ -785,7 +785,7 @@ static void release_tx_bufs(struct virtproc_info *vrp)
 		count++;
 	}
 
-	dev_info(&vrp->vdev->dev, "%s Tx Done num_free %d count %u\n",__func__,
+	dev_dbg(&vrp->vdev->dev, "%s Tx Done num_free %d count %u\n",__func__,
 			vrp->svq->num_free, count);
 }
 
@@ -1042,7 +1042,7 @@ int rpmsg_send_offchannel_raw_zcopy(struct rpmsg_channel *rpdev, u32 src, u32 ds
 	msg->dst = dst;
 	msg->reserved = 0;
 
-	dev_info(dev, "TX From 0x%x, To 0x%x, Len %d, Flags %d, Reserved %d\n",
+	dev_dbg(dev, "TX From 0x%x, To 0x%x, Len %d, Flags %d, Reserved %d\n",
 					msg->src, msg->dst, msg->len,
 					msg->flags, msg->reserved);
 #if 0
@@ -1148,7 +1148,7 @@ int rpmsg_send_offchannel_raw(struct rpmsg_channel *rpdev, u32 src, u32 dst,
 	msg->reserved = 0;
 	memcpy(msg->data, data, len);
 
-	dev_info(dev, "TX From 0x%x, To 0x%x, Len %d, Flags %d, Reserved %d\n",
+	dev_dbg(dev, "TX From 0x%x, To 0x%x, Len %d, Flags %d, Reserved %d\n",
 					msg->src, msg->dst, msg->len,
 					msg->flags, msg->reserved);
 #if 0
@@ -1474,7 +1474,7 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 	struct virtproc_info *vrp = vdev->priv;
 	struct device *dev = &vdev->dev;
 	struct vringh_kiov *riov = &vrp->vrh_ctx.riov;
-	unsigned int msgs_received = 0, msgs_dropped = 0, part = 0;
+	unsigned int msgs_received = 0, msgs_dropped = 0, sgs = 0;
 	struct rpmsg_hdr *msg;
 	int err;
 
@@ -1510,11 +1510,11 @@ static void rpmsg_vrh_recv_done(struct virtio_device *vdev, struct vringh *vrh)
 			continue;
 		}
 		msgs_received++;
-		part++;
-		if (part >= (vrp->vrh->vring.num >> 2) &&
+		sgs++;
+		if (sgs >= RPMSG_MAX_SG_SIZE ||
 				(vringh_need_notify_kern(vrp->vrh) > 0)) {
 			vringh_notify(vrp->vrh);
-			part = 0;
+			sgs = 0;
 		}
 	} while(true);
 exit:
@@ -1542,7 +1542,7 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 	struct scatterlist sg;
 	int err;
 
-	dev_info(dev, "From: 0x%x, To: 0x%x, Len: %d, Flags: %d, Reserved: %d\n",
+	dev_dbg(dev, "From: 0x%x, To: 0x%x, Len: %d, Flags: %d, Reserved: %d\n",
 					msg->src, msg->dst, msg->len,
 					msg->flags, msg->reserved);
 #if 0
