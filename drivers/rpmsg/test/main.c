@@ -174,11 +174,13 @@ static inline int open_crpmsg_dev(struct rpmsg_test_args *targs)
 
 static void rpmsg_send(struct rpmsg_test_args *targs)
 {
+	struct rpmsg_client_stats gstats;
 	void *sbuf = NULL;
-	int i, fd;
+	int i, fd, ret;
 
 	assert(targs->sbuf_size);
 
+	INIT_STATS();
 	sbuf = malloc(targs->sbuf_size);
 	if(!sbuf) {
 		printf("malloc failed %s %s\n", path, strerror(errno));
@@ -203,7 +205,14 @@ static void rpmsg_send(struct rpmsg_test_args *targs)
 		}
 	}
 
-	if (targs->wait) while(1);
+	ret = ioctl(fd, RPMSG_READ_STATS_IOCTL, (void *)&gstats);
+	if(ret < 0) {
+		printf("RPMSG_READ_STATS_IOCTL failed %s %s\n", path,
+				strerror(errno));
+		goto err;
+	}
+
+	PRINT_TEST_SUMMARY();
 err:
 	free(sbuf);
 	close(fd);

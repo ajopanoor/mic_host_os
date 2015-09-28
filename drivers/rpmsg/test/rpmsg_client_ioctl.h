@@ -160,7 +160,7 @@ typedef unsigned int u32;
 		(u32)tmax / 1000, (u32)tmax % 1000);	\
 	}						\
 	if (rtmin != UINT_MAX) {			\
-		rtavg = (rtsum / (nsend + nrecv));	\
+		rtavg = (rtsum / nsend );		\
 		__print("round-trip-time min/avg/max = "\
 			"%u.%03u/%u.%03u/%u.%03u us\n",	\
 		(u32)rtmin / 1000, (u32)rtmin % 1000,	\

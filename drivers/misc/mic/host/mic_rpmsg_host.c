@@ -458,13 +458,15 @@ static irqreturn_t mic_proc_vq_interrupt(struct mic_proc *mic_proc, int notifyid
 				break;
 			case 1:
 				break; // FIXME: remove if recv != vrh
-			case 2:
+			case 2:        // FIXME: tx_complete intr disabled.
+#if 0
 				if(lvring && lvring->vq)
 					ret = vring_interrupt(1, lvring->vq);
 				else
 					printk(KERN_INFO "%s: Failed interrupt!"
 						"lvring %p notifyid %d",
 					       	__func__, lvring, notifyid);
+#endif
 				break;
 			default:
 				printk(KERN_INFO "%s: Failed interrupt!"

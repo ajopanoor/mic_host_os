@@ -13,7 +13,6 @@
  * the bsp_addr as 1024. Dirty hack to use the same client dirver on AP & BSP
  */
 
-#define LOOP_ADDR		127
 #define	BSP_ADDR		1024
 #define	DMA_ADDR		3500
 #define IOV_ADDR		3501
@@ -73,14 +72,4 @@ struct rpmsg_recv_blk{
 	struct list_head vlink;
 	struct list_head clink;
 };
-
-void rpmsg_client_ping(struct rpmsg_client_vdev *rvdev,
-		 				struct rpmsg_test_args *targs);
-void rpmsg_ping_cb(struct rpmsg_channel *rpdev, void *data, int len,
-						void *priv, u32 src);
-void rpmsg_loopback_cb(struct rpmsg_channel *rpdev, void *data, int len,
-						void *priv, u32 src);
-int rpmsg_ping_status(struct rpmsg_client_vdev *rvdev);
-struct rpmsg_endpoint *rpmsg_client_open_loopback_ept(struct rpmsg_channel *rpdev,
-		unsigned long addr);
 #endif //_RPMSG_CLIENT_H

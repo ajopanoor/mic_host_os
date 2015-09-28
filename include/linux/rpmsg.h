@@ -118,7 +118,6 @@ struct rpmsg_channel {
 };
 
 typedef void (*rpmsg_rx_cb_t)(struct rpmsg_channel *, void *, int, void *, u32);
-typedef void (*rpmsg_tx_cb_t)(struct rpmsg_channel *, void *, int, void *, u32);
 
 /**
  * struct rpmsg_endpoint - binds a local rpmsg address to its user
@@ -177,9 +176,6 @@ struct rpmsg_endpoint *rpmsg_create_ept(struct rpmsg_channel *,
 				rpmsg_rx_cb_t cb, void *priv, u32 addr);
 int
 rpmsg_send_offchannel_raw(struct rpmsg_channel *, u32, u32, void *, int, bool);
-int
-rpmsg_send_offchannel_raw_zcopy(struct rpmsg_channel *, u32, u32, void *, int,
-		bool, rpmsg_tx_cb_t, void *);
 
 /**
  * rpmsg_send() - send a message across to the remote processor
@@ -331,22 +327,6 @@ int rpmsg_trysend_offchannel(struct rpmsg_channel *rpdev, u32 src, u32 dst,
 							void *data, int len)
 {
 	return rpmsg_send_offchannel_raw(rpdev, src, dst, data, len, false);
-}
-
-static inline
-int rpmsg_trysend_offchannel_zcopy(struct rpmsg_channel *rpdev, u32 src, u32 dst,
-			void *data, int len, rpmsg_tx_cb_t cb, void *priv)
-{
-	return rpmsg_send_offchannel_raw_zcopy(rpdev, src, dst, data, len,
-			false, cb, priv);
-}
-
-static inline
-int rpmsg_send_offchannel_zcopy(struct rpmsg_channel *rpdev, u32 src, u32 dst,
-			void *data, int len, rpmsg_tx_cb_t cb, void *priv)
-{
-	return rpmsg_send_offchannel_raw_zcopy(rpdev, src, dst, data, len,
-			true, cb, priv);
 }
 
 #endif /* _LINUX_RPMSG_H */
