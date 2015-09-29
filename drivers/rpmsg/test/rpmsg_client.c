@@ -764,7 +764,6 @@ static int rpmsg_ping_send(struct rpmsg_client_vdev *rvdev,
 	u32 *payload;
 	int ret = 0, seq = 1;
 
-	LOG_TIME(ping_start_time);
 	kargs->sbuf = vmalloc(kargs->sbuf_size);
 	if (IS_ERR(kargs->sbuf)) {
 		ret = PTR_ERR(kargs->sbuf);
@@ -775,6 +774,8 @@ static int rpmsg_ping_send(struct rpmsg_client_vdev *rvdev,
 	ret = create_ept(rvdev, kargs->src_ept);
 	if(ret)
 		return ret;
+
+	LOG_TIME(ping_start_time);
 	payload = (u32 *) kargs->sbuf;
 	payload[0] = seq;
 

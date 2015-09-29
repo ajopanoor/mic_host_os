@@ -796,7 +796,7 @@ static struct buf_info *get_var_tx_buf(struct virtproc_info *vrp, size_t len)
 	 * to go via the wait for completion overhaul.
 	 */
 	if (vrp->svq->num_free < ((len / PAGE_SIZE) + 1)) {
-		dev_dbg(&vrp->vdev->dev, "tx ring full, free %d needed %zu\n",
+		dev_info(&vrp->vdev->dev, "tx ring full, free %d needed %zu\n",
 				vrp->svq->num_free, ((len / PAGE_SIZE) + 1));
 		goto retry_later;
 	}
@@ -809,7 +809,7 @@ static struct buf_info *get_var_tx_buf(struct virtproc_info *vrp, size_t len)
 	/* allocate a buffer of size len from genpool */
 	tx_info->addr = (void *)gen_pool_alloc(vrp->pool, len);
 	if (unlikely(!tx_info->addr)) {
-		dev_dbg(&vrp->vdev->dev, "out of tx bufs, vring num_free %d\n",
+		dev_info(&vrp->vdev->dev, "out of tx bufs, vring num_free %d\n",
 				vrp->svq->num_free);
 		goto pool_empty;
 	}
