@@ -14,6 +14,7 @@
 #include "mic_smpt.h"
 #include "mic_intr.h"
 #include "../common/mic_proc.h"
+#include "../../../rpmsg/test/rpmsg_client_ioctl.h"
 
 struct mic_proc_resourcetable mproc_resourcetable
 	__attribute__((section(".resource_table"), aligned(PAGE_SIZE))) =
@@ -76,13 +77,18 @@ static void mic_proc_rpmsg_work(struct work_struct *work)
 {
 	struct mic_proc *mic_proc =
 		container_of(work, struct mic_proc, vq_work);
+	struct proc_stats *pstats = mic_proc->stats;
 	int i;
 
+	LOG_TIME(wq_tr_time);
+	UPDATE_PROC_HIST(wq_queue_time, wq_tr_time, WQ_STATS);
 	for (i = 0; i <= mic_proc->max_notifyid; i++) {
 		if(mic_proc_vq_interrupt(mic_proc, i) == IRQ_NONE) {
 			//printk(KERN_DEBUG "%s No work to do vq %d\n",__func__,i);
 		}
 	}
+	wq_tr_time = 0;
+	wq_queue_time = 0;
 }
 #endif
 
@@ -90,11 +96,13 @@ static bool mic_proc_virtio_notify(struct virtqueue *vq)
 {
 	struct rproc_vring *lvring = vq->priv;
 	struct mic_proc *mic_proc;
+	struct proc_stats *pstats;
 	s8 db;
 	mic_proc = (struct mic_proc *)lvring->rvdev->rproc;
 	db = mic_proc->table_ptr->h2c_db;
-
+	pstats = mic_proc->stats;
 	dev_dbg(mic_proc->dev, "%s %s\n", __func__, vq->name);
+	LOG_TIME(vq_intr_time);
 	mic_proc->mdev->ops->send_intr(mic_proc->mdev, db);
 	return true;
 }
@@ -103,12 +111,14 @@ static void mic_proc_virtio_vringh_notify(struct vringh *vrh)
 {
 	struct rproc_vring *lvring = vringh_to_rvring(vrh);
 	struct mic_proc *mic_proc;
+	struct proc_stats *pstats;
 	s8 db;
 
 	mic_proc = (struct mic_proc *)lvring->rvdev->rproc;
 	db = mic_proc->table_ptr->h2c_db;
-
+	pstats = mic_proc->stats;
 	dev_dbg(mic_proc->dev, "%s %s\n", __func__, "vrh");
+	LOG_TIME(vrh_intr_time);
 	mic_proc->mdev->ops->send_intr(mic_proc->mdev, db);
 }
 
@@ -484,15 +494,28 @@ static irqreturn_t mic_proc_callback(int irq, void *data)
 {
 	struct mic_proc *mic_proc = data;
 	struct mic_device *mdev = mic_proc->mdev;
+	struct proc_stats *pstats = mic_proc->stats;
 	struct device *dev;
 	int i = 0;
 
 	if (unlikely(!mic_proc)) {
 		return IRQ_HANDLED;
 	}
+
 	dev = mic_proc->dev;
+
+	LOG_TIME(cb_start_time);
+
+	if (vq_intr_time)
+		UPDATE_PROC_HIST(vq_intr_time, cb_start_time, VQ_STATS);
+	if (vrh_intr_time)
+		UPDATE_PROC_HIST(vrh_intr_time, cb_start_time, VH_STATS);
+
 	mdev->ops->intr_workarounds(mdev);
 #ifdef CONFIG_MIC_RPMSG_WQ
+	if (!wq_queue_time)
+		LOG_TIME(wq_queue_time);
+
 	dev_dbg(dev, "%s vq work queued\n",__func__);
 	queue_work(mic_rpmsg_wq, &mic_proc->vq_work);
 #else
@@ -503,6 +526,9 @@ static irqreturn_t mic_proc_callback(int irq, void *data)
 		}
 	}
 #endif
+	LOG_TIME(cb_end_time);
+	UPDATE_PROC_HIST(cb_start_time, cb_end_time, CB_STATS);
+
 	return IRQ_HANDLED;
 }
 
@@ -654,14 +680,22 @@ int mic_proc_add_virtio_dev(struct mic_proc *mic_proc, struct rproc_vdev *lvdev,
 {
 	struct device *dev = mic_proc->dev;
 	struct virtio_device *vdev = &lvdev->vdev;
+	struct trpt_info *trpt;
 	int ret;
 
+	trpt = kzalloc(sizeof(*trpt), GFP_KERNEL);
+	if (!trpt) {
+		dev_err(dev, "mic_proc: failed to register vdev\n");
+		return PTR_ERR(trpt);
+	}
+	trpt->procdev = mic_proc->mdev;
+	trpt->stats = mic_proc->stats;
 	vdev->id.device	= id;
 	vdev->config = &mic_proc_virtio_config_ops;
 	vdev->vringh_config = &mic_proc_virtio_vringh_ops;
 	vdev->dev.parent = dev;
 	vdev->dev.release = mic_proc_vdev_release;
-	dev_set_drvdata(&vdev->dev, mic_proc->mdev);
+	dev_set_drvdata(&vdev->dev, trpt);
 
 	ret = register_virtio_device(vdev);
 	if (ret) {
@@ -893,11 +927,15 @@ int mic_proc_init(struct mic_device *mdev)
 	struct mic_proc *mic_proc;
 	int ret = -ENOMEM;
 
-	mic_proc = kzalloc(sizeof(struct mic_proc), GFP_KERNEL);
+	mic_proc = kzalloc(sizeof(struct mic_proc) +
+			(sizeof(struct proc_stats) * MAX_STATS), GFP_KERNEL);
 	if (!mic_proc) {
 		dev_err(mdev->sdev->parent,"%s: kzalloc failed\n", __func__);
 		return ret;
 	}
+
+	mic_proc->stats = &mic_proc[1];
+
 #ifdef CONFIG_MIC_RPMSG_WQ
 	mic_rpmsg_wq = alloc_workqueue("mic-rpmsg-wq", 0, 0);
 	if (!mic_rpmsg_wq)
@@ -914,7 +952,7 @@ int mic_proc_init(struct mic_device *mdev)
 		dev_err(mdev->sdev->parent,"%s: virtio config failed\n", __func__);
 		goto err;
 	}
-	return 0;
+		return 0;
 err:
 #ifdef CONFIG_MIC_RPMSG_WQ
 	destroy_workqueue(mic_rpmsg_wq);

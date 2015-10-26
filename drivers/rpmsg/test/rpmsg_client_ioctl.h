@@ -2,11 +2,13 @@
 #define _RPMSG_CLIENT_IOCTL_H_
 #include <linux/types.h>
 
-#define RPMSG_PING_IOCTL	_IOWR('s', 1, void *)
-#define RPMSG_CFG_DEV_IOCTL	_IOWR('s', 2, void *)
-#define RPMSG_CREATE_EPT_IOCTL	_IOWR('s', 3, unsigned int)
-#define RPMSG_DESTROY_EPT_IOCTL	_IOWR('s', 4, unsigned int)
-#define RPMSG_READ_STATS_IOCTL	_IOWR('s', 5, void *)
+#define RPMSG_PING_IOCTL		_IOWR('s', 1, void *)
+#define RPMSG_CFG_DEV_IOCTL		_IOWR('s', 2, void *)
+#define RPMSG_CREATE_EPT_IOCTL		_IOWR('s', 3, unsigned int)
+#define RPMSG_DESTROY_EPT_IOCTL		_IOWR('s', 4, unsigned int)
+#define RPMSG_READ_STATS_IOCTL		_IOWR('s', 5, void *)
+#define RPMSG_READ_PSTATS_IOCTL		_IOWR('s', 6, void *)
+#define RPMSG_CLEAR_PSTATS_IOCTL	_IOWR('s', 7, unsigned int)
 
 enum __rpmsg_test_types {
 	RPMSG_NULL_TEST,
@@ -34,10 +36,24 @@ struct rpmsg_test_args {
 };
 
 #define MAX_TEST_STATE		3
+#define HISTO_SIZE		32
 
-struct rpmsg_client_timestamp {
+struct time_entry {
 	unsigned long start_time;
 	unsigned long end_time;
+};
+
+enum hist_states {
+	VQ_STATS,
+	VH_STATS,
+	CB_STATS,
+	WQ_STATS,
+	MAX_STATS,
+};
+
+struct proc_stats {
+	unsigned int proc[HISTO_SIZE];
+	struct time_entry times;
 };
 
 struct rpmsg_client_stats {
@@ -60,7 +76,7 @@ struct rpmsg_client_stats {
 	unsigned long rtavg;
 	unsigned long rtsum;
 	unsigned long triptime;	// remove when cleaning up old ping code
-	struct rpmsg_client_timestamp timestamps[MAX_TEST_STATE];
+	struct time_entry timestamps[MAX_TEST_STATE];
 };
 
 #ifdef __KERNEL__
@@ -168,5 +184,43 @@ typedef unsigned int u32;
 		(u32)rtmax / 1000, (u32)rtmax % 1000);	\
 	}						\
 } while(0)
+
+
+#define PROC (pstats)
+
+#define vq_intr_time		(PROC[VQ_STATS].times.start_time)
+#define vrh_intr_time		(PROC[VH_STATS].times.start_time)
+#define wq_queue_time		(PROC[WQ_STATS].times.start_time)
+#define wq_tr_time		(PROC[WQ_STATS].times.end_time)
+#define cb_start_time		(PROC[CB_STATS].times.start_time)
+#define cb_end_time		(PROC[CB_STATS].times.end_time)
+
+#ifdef __KERNEL__
+#define IDXOF(x)					\
+({							\
+	unsigned int __idx;				\
+	__idx = find_last_bit(&x, BITS_PER_LONG);	\
+	__idx;						\
+})
+
+#define UPDATE_PROC_HIST(start, end, type) do {		\
+	unsigned long val;				\
+	unsigned int idx;				\
+	val = end - start;				\
+	idx = IDXOF(val);				\
+	PROC[type].proc[idx] += 1;              	\
+} while(0)
+
+struct trpt_info {
+	void *procdev;
+	void *stats;
+};
+
+#endif
+
+#define PROC_HIST(type, idx)			\
+({						\
+	PROC[type].proc[idx];			\
+})
 
 #endif //_RPMSG_CLIENT_IOCTL_H_

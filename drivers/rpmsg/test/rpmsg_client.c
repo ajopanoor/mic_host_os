@@ -650,6 +650,37 @@ static int rpmsg_read_vdev_stats(struct rpmsg_client_vdev *rvdev,
 	return ret;
 }
 
+static int rpmsg_read_proc_stats(struct rpmsg_client_vdev *rvdev,
+		unsigned long arg)
+{
+	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
+	int size = sizeof(struct proc_stats) * MAX_STATS;
+	struct proc_stats *stats = rpdev->priv;
+	char __user *buf = (char __user *)arg;
+	int ret = 0;
+
+	ret = access_ok(VERIFY_WRITE, buf, size);
+	if (ret < 0) {
+		dev_err(&rpdev->dev, "access_ok failed %s %d", __func__, ret);
+		return ret;
+	}
+	ret = copy_to_user(buf, stats, size);
+	if (ret < 0)
+		dev_err(&rpdev->dev, "failed to copy rpmsg_client_stats\n");
+
+	return ret;
+}
+
+static void rpmsg_clear_proc_stats(struct rpmsg_client_vdev *rvdev,
+		unsigned long arg)
+{
+	struct rpmsg_channel *rpdev = rvdev->rcdev->rpdev;
+	int size = sizeof(struct proc_stats) * MAX_STATS;
+	struct proc_stats *stats = rpdev->priv;
+
+	memset(stats, 0, size);
+}
+
 static inline rpmsg_rx_cb_t get_cb(struct rpmsg_client_device *rcdev, u32 addr)
 {
 	rpmsg_rx_cb_t cb;
@@ -905,6 +936,12 @@ long rpmsg_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			break;
 		case RPMSG_READ_STATS_IOCTL:
 			ret = rpmsg_read_vdev_stats(rvdev, arg);
+			break;
+		case RPMSG_READ_PSTATS_IOCTL:
+			ret = rpmsg_read_proc_stats(rvdev, arg);
+			break;
+		case RPMSG_CLEAR_PSTATS_IOCTL:
+			rpmsg_clear_proc_stats(rvdev, arg);
 			break;
 		default:
 			dev_err(&rpdev->dev, "%s ioctl %d failed\n", __func__,

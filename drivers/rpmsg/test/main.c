@@ -287,12 +287,33 @@ err:
 	close(fd);
 }
 
+char stat_types[MAX_STATS][80] = {
+	"VQ_STATS: Tx Req to Response Time",
+	"VH_STATS: Rx Done to Next INTR Time",
+	"CB_STATS: CB Entry to Exit Time",
+	"WQ_STATS: WQ Queue to WQ Trigger Time",
+};
+
+void __print_proc_stats(struct proc_stats *pstats)
+{
+	unsigned int type, idx, log2val;
+	for (type = VQ_STATS; type < MAX_STATS; type++) {
+		printf("\n%s\n", stat_types[type]);
+		for(idx = 0; idx < 32; idx++) {
+			log2val = 1 << idx;
+			if (PROC_HIST(type, idx))
+				printf("idx %2d %8d :%d\n", idx, log2val,
+						PROC_HIST(type, idx));
+		}
+	}
+}
 
 static void rpmsg_ping(struct rpmsg_test_args *targs)
 {
 	int fd, ret, id = 0;
 	unsigned int addr = targs->src_ept;
 	struct rpmsg_client_stats gstats;
+	struct proc_stats stats[MAX_STATS];
 
 	__validate_all_args(targs);
 
@@ -300,6 +321,11 @@ static void rpmsg_ping(struct rpmsg_test_args *targs)
 
 	if((fd = open_crpmsg_dev(targs)) < 0)
 		return;
+
+	ret = ioctl(fd, RPMSG_CLEAR_PSTATS_IOCTL, 0);
+	if(ret < 0)
+		printf("RPMSG_READ_STATS_IOCTL failed %s %s\n", path,
+				strerror(errno));
 
 	ret = ioctl(fd, RPMSG_PING_IOCTL, (void *)targs);
 	if (ret < 0) {
@@ -313,6 +339,14 @@ static void rpmsg_ping(struct rpmsg_test_args *targs)
 				strerror(errno));
 
 	PRINT_TEST_SUMMARY();
+
+	ret = ioctl(fd, RPMSG_READ_PSTATS_IOCTL, (void *)&stats);
+	if(ret < 0)
+		printf("RPMSG_READ_STATS_IOCTL failed %s %s\n", path,
+				strerror(errno));
+
+	__print_proc_stats(stats);
+
 	close(fd);
 }
 

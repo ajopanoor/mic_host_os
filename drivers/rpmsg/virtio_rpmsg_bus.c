@@ -145,6 +145,10 @@ struct rpmsg_channel_info {
 	u32 dst;
 };
 
+struct trpt_info {
+	void *procdev;
+	void *stats;
+};
 #define to_rpmsg_channel(d) container_of(d, struct rpmsg_channel, dev)
 #define to_rpmsg_driver(d) container_of(d, struct rpmsg_driver, drv)
 
@@ -425,7 +429,7 @@ static int rpmsg_dev_probe(struct device *dev)
 	struct rpmsg_channel *rpdev = to_rpmsg_channel(dev);
 	struct rpmsg_driver *rpdrv = to_rpmsg_driver(rpdev->dev.driver);
 	struct virtproc_info *vrp = rpdev->vrp;
-	struct mic_device *mdev = dev_get_drvdata(&vrp->vdev->dev);
+	struct trpt_info *trpt  = dev_get_drvdata(&vrp->vdev->dev);
 	struct rpmsg_endpoint *ept;
 	int err;
 
@@ -438,7 +442,8 @@ static int rpmsg_dev_probe(struct device *dev)
 
 	rpdev->ept = ept;
 	rpdev->src = ept->addr;
-	dev_set_drvdata(dev, mdev);
+	dev_set_drvdata(dev, trpt->procdev);
+	rpdev->priv = trpt->stats;
 
 	err = rpdrv->probe(rpdev);
 	if (err) {
@@ -1053,7 +1058,9 @@ EXPORT_SYMBOL(rpmsg_send_offchannel_raw);
 
 static void *__rpmsg_mic_aper_va(struct virtproc_info *vrp, unsigned long addr, size_t len)
 {
-	struct mic_device *mdev = dev_get_drvdata(&vrp->vdev->dev);
+	//struct mic_device *mdev = dev_get_drvdata(&vrp->vdev->dev);
+	struct trpt_info *trpt = dev_get_drvdata(&vrp->vdev->dev);
+	struct mic_device *mdev = trpt->procdev;
 	void *va;
 
 	va = (void __force *)mdev->aper.va + le64_to_cpu(addr);
@@ -1576,7 +1583,9 @@ static int rpmsg_probe(struct virtio_device *vdev)
 {
 	vq_callback_t *vq_cbs[] = { rpmsg_recv_done, rpmsg_xmit_done };
 	vrh_callback_t *vrh_cbs[] = { rpmsg_vrh_recv_done };
-	struct mic_device *mdev = dev_get_drvdata(&vdev->dev);
+	//struct mic_device *mdev = dev_get_drvdata(&vdev->dev);
+	struct trpt_info *trpt = dev_get_drvdata(&vdev->dev);
+	struct mic_device *mdev = trpt->procdev;
 	const char *names[] = { "input", "output" };
 	struct virtqueue *vqs[2];
 	struct virtproc_info *vrp;
